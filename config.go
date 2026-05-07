@@ -136,6 +136,38 @@ var defaultConfig = Config{
 	},
 }
 
+var installDefaultsBackends map[string]InstallConfig
+var installDefaultsProcesses map[string]InstallConfig
+
+func init() {
+	installDefaultsBackends = map[string]InstallConfig{
+		"forge": {
+			Method:  InstallZip,
+			URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
+			Target:  "./stable-diffusion-webui-forge",
+			Version: "main",
+		},
+		"a1111": {
+			Method:  InstallZip,
+			URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
+			Target:  "./stable-diffusion-webui",
+			Version: "master",
+		},
+	}
+	installDefaultsProcesses = map[string]InstallConfig{
+		"ollama": {
+			Method: InstallBinary,
+			URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
+			Target: "/usr/local/bin/ollama",
+		},
+		"rembg": {
+			Method: InstallPip,
+			URL:    "rembg",
+			Target: "rembg",
+		},
+	}
+}
+
 func Load(path string) (*Config, error) {
 	cfg := defaultConfig
 
@@ -189,15 +221,15 @@ func (c *Config) applyBackendToProcess() {
 }
 
 func (c *Config) applyInstallDefaults() {
-	for key, def := range defaultConfig.Backends {
-		if bc, ok := c.Backends[key]; ok && bc.Install.Method == "" && def.Install.Method != "" {
-			bc.Install = def.Install
+	for key, def := range installDefaultsBackends {
+		if bc, ok := c.Backends[key]; ok && bc.Install.Method == "" {
+			bc.Install = def
 			c.Backends[key] = bc
 		}
 	}
-	for key, def := range defaultConfig.Processes {
-		if pc, ok := c.Processes[key]; ok && pc.Install.Method == "" && def.Install.Method != "" {
-			pc.Install = def.Install
+	for key, def := range installDefaultsProcesses {
+		if pc, ok := c.Processes[key]; ok && pc.Install.Method == "" {
+			pc.Install = def
 			c.Processes[key] = pc
 		}
 	}
