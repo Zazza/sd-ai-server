@@ -85,13 +85,43 @@ func (inst *Installer) IsInstalled(key string) bool {
 	return s.Installed
 }
 
-func (inst *Installer) Install(key string) error {
+func (inst *Installer) ensureStatus(key string) *RingBuffer {
 	inst.mu.Lock()
+	defer inst.mu.Unlock()
+
 	s, ok := inst.statuses[key]
 	if !ok {
-		inst.mu.Unlock()
-		return fmt.Errorf("unknown install target: %s", key)
+		s = &InstallStatus{Key: key}
+		ic := inst.getConfig(key)
+		if ic != nil {
+			s.Installed = inst.checkInstalled(*ic)
+		}
+		inst.statuses[key] = s
 	}
+
+	lb, ok := inst.logs[key]
+	if !ok {
+		lb = NewRingBuffer(ringBufferSize)
+		inst.logs[key] = lb
+	}
+	return lb
+}
+
+func (inst *Installer) getConfig(key string) *InstallConfig {
+	if bc, ok := inst.config.Backends[key]; ok && bc.Install.Method != "" {
+		return &bc.Install
+	}
+	if pc, ok := inst.config.Processes[key]; ok && pc.Install.Method != "" {
+		return &pc.Install
+	}
+	return nil
+}
+
+func (inst *Installer) Install(key string) error {
+	lb := inst.ensureStatus(key)
+
+	inst.mu.Lock()
+	s := inst.statuses[key]
 	if s.Installing {
 		inst.mu.Unlock()
 		return fmt.Errorf("already installing: %s", key)
@@ -101,29 +131,19 @@ func (inst *Installer) Install(key string) error {
 		return nil
 	}
 
-	s.Installing = true
-	s.Progress = "starting"
-	s.Error = ""
-	inst.statuses[key] = s
-	lb := inst.logs[key]
-	inst.mu.Unlock()
-
-	var ic InstallConfig
-	if bc, ok := inst.config.Backends[key]; ok && bc.Install.Method != "" {
-		ic = bc.Install
-	} else if pc, ok := inst.config.Processes[key]; ok && pc.Install.Method != "" {
-		ic = pc.Install
-	} else {
-		inst.mu.Lock()
-		s = inst.statuses[key]
-		s.Installing = false
-		s.Error = "no install config"
-		inst.statuses[key] = s
+	ic := inst.getConfig(key)
+	if ic == nil {
 		inst.mu.Unlock()
 		return fmt.Errorf("no install config for: %s", key)
 	}
 
-	err := inst.doInstall(key, ic, lb)
+	s.Installing = true
+	s.Progress = "starting"
+	s.Error = ""
+	inst.statuses[key] = s
+	inst.mu.Unlock()
+
+	err := inst.doInstall(key, *ic, lb)
 
 	inst.mu.Lock()
 	s = inst.statuses[key]
@@ -197,14 +217,6 @@ func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) 
 
 	if err := extractZip(tmpPath, ic.Target); err != nil {
 		return fmt.Errorf("extract: %w", err)
-	}
-
-	inst.setProgress(key, "verifying")
-	if ic.Version != "" {
-		renamed := filepath.Join(ic.Target+"-"+ic.Version, "*")
-		matches, _ := filepath.Glob(renamed)
-		if len(matches) > 0 {
-		}
 	}
 
 	lb.Write("Installation complete")
@@ -322,9 +334,10 @@ func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 
 func (inst *Installer) setProgress(key string, progress string) {
 	inst.mu.Lock()
-	s := inst.statuses[key]
-	s.Progress = progress
-	inst.statuses[key] = s
+	if s, ok := inst.statuses[key]; ok {
+		s.Progress = progress
+		inst.statuses[key] = s
+	}
 	inst.mu.Unlock()
 }
 
@@ -372,10 +385,7 @@ func (inst *Installer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst.mu.RLock()
-	_, ok := inst.statuses[key]
-	inst.mu.RUnlock()
-	if !ok {
+	if inst.getConfig(key) == nil {
 		writeError(w, "unknown install target: "+key, http.StatusNotFound)
 		return
 	}
@@ -507,24 +517,24 @@ func extractZip(zipPath, targetDir string) error {
 	}
 	defer r.Close()
 
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
+	tmpDir, err := os.MkdirTemp("", "sd-extract-*")
+	if err != nil {
 		return err
 	}
+	defer os.RemoveAll(tmpDir)
 
-	var topDir string
 	for _, f := range r.File {
-		if topDir == "" {
-			if idx := strings.Index(f.Name, "/"); idx >= 0 {
-				topDir = f.Name[:idx+1]
-			}
-		}
-
-		relPath := strings.TrimPrefix(f.Name, topDir)
-		if relPath == "" {
+		if f.Name == "" {
 			continue
 		}
 
-		destPath := filepath.Join(targetDir, relPath)
+		parts := strings.SplitN(f.Name, "/", 2)
+		if len(parts) < 2 || parts[1] == "" {
+			continue
+		}
+		relPath := parts[1]
+
+		destPath := filepath.Join(tmpDir, relPath)
 
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(destPath, 0755)
@@ -554,7 +564,11 @@ func extractZip(zipPath, targetDir string) error {
 		}
 	}
 
-	return nil
+	if err := os.RemoveAll(targetDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove old target: %w", err)
+	}
+
+	return os.Rename(tmpDir, targetDir)
 }
 
 func parsePositiveInt(s string) (int, error) {
