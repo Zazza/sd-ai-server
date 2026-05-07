@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -89,7 +90,8 @@ func (bm *BackendManager) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !bm.installer.IsInstalled(req.Backend) {
+	// Check if backend binary actually exists on disk
+	if _, err := os.Stat(backend.Binary); err != nil {
 		if err := bm.installer.Install(req.Backend); err != nil {
 			writeError(w, "installation failed: "+err.Error(), http.StatusInternalServerError)
 			return
