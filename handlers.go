@@ -8,18 +8,20 @@ import (
 )
 
 type Handlers struct {
-	manager *ProcessManager
-	health  *HealthMonitor
-	gpu     *GPUMonitor
-	config  *Config
+	manager   *ProcessManager
+	health    *HealthMonitor
+	gpu       *GPUMonitor
+	config    *Config
+	installer *Installer
 }
 
-func NewHandlers(pm *ProcessManager, hm *HealthMonitor, gm *GPUMonitor, cfg *Config) *Handlers {
+func NewHandlers(pm *ProcessManager, hm *HealthMonitor, gm *GPUMonitor, cfg *Config, inst *Installer) *Handlers {
 	return &Handlers{
-		manager: pm,
-		health:  hm,
-		gpu:     gm,
-		config:  cfg,
+		manager:   pm,
+		health:    hm,
+		gpu:       gm,
+		config:    cfg,
+		installer: inst,
 	}
 }
 
@@ -45,6 +47,7 @@ func (h *Handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"processes": statuses,
 		"health":    healthResults,
 		"gpu":       gpuInfo,
+		"installs":  h.installer.Status(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

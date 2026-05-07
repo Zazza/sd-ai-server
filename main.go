@@ -35,8 +35,9 @@ func main() {
 	hm := NewHealthMonitor(cfg)
 	gm := NewGPUMonitor()
 	mm := NewModelManager(cfg)
-	bm := NewBackendManager(cfg, pm)
-	handlers := NewHandlers(pm, hm, gm, cfg)
+	inst := NewInstaller(cfg)
+	bm := NewBackendManager(cfg, pm, inst)
+	handlers := NewHandlers(pm, hm, gm, cfg, inst)
 
 	// Setup HTTP mux
 	mux := http.NewServeMux()
@@ -46,6 +47,7 @@ func main() {
 	mm.RegisterRoutes(mux)
 	mm.RegisterDeleteRoutes(mux)
 	bm.RegisterRoutes(mux)
+	inst.RegisterRoutes(mux)
 
 	// Proxy catches /api/sd/*, /api/llm/*, /api/rembg/*
 	mux.Handle("/api/sd/", proxy)

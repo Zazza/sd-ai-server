@@ -1,0 +1,572 @@
+package main
+
+import (
+	"archive/zip"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+)
+
+type InstallMethod string
+
+const (
+	InstallZip    InstallMethod = "zip"
+	InstallBinary InstallMethod = "binary"
+	InstallPip    InstallMethod = "pip"
+)
+
+type InstallStatus struct {
+	Key        string `json:"key"`
+	Installed  bool   `json:"installed"`
+	Installing bool   `json:"installing"`
+	Progress   string `json:"progress"`
+	Error      string `json:"error,omitempty"`
+}
+
+type Installer struct {
+	config   *Config
+	mu       sync.RWMutex
+	statuses map[string]*InstallStatus
+	logs     map[string]*RingBuffer
+}
+
+func NewInstaller(cfg *Config) *Installer {
+	inst := &Installer{
+		config:   cfg,
+		statuses: make(map[string]*InstallStatus),
+		logs:     make(map[string]*RingBuffer),
+	}
+
+	for key, bc := range cfg.Backends {
+		if bc.Install.Method != "" {
+			s := &InstallStatus{Key: key}
+			s.Installed = inst.checkInstalled(bc.Install)
+			inst.statuses[key] = s
+			inst.logs[key] = NewRingBuffer(ringBufferSize)
+		}
+	}
+
+	for key, pc := range cfg.Processes {
+		if pc.Install.Method != "" {
+			if _, exists := inst.statuses[key]; exists {
+				continue
+			}
+			s := &InstallStatus{Key: key}
+			s.Installed = inst.checkInstalled(pc.Install)
+			inst.statuses[key] = s
+			inst.logs[key] = NewRingBuffer(ringBufferSize)
+		}
+	}
+
+	return inst
+}
+
+func (inst *Installer) RegisterRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("/api/server/install/status", inst.handleAllStatus)
+	mux.HandleFunc("/api/server/install/status/", inst.handleOneStatus)
+	mux.HandleFunc("/api/server/install/", inst.handleInstall)
+	mux.HandleFunc("/api/server/install/logs/", inst.handleLogs)
+}
+
+func (inst *Installer) IsInstalled(key string) bool {
+	inst.mu.RLock()
+	s, ok := inst.statuses[key]
+	inst.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	return s.Installed
+}
+
+func (inst *Installer) Install(key string) error {
+	inst.mu.Lock()
+	s, ok := inst.statuses[key]
+	if !ok {
+		inst.mu.Unlock()
+		return fmt.Errorf("unknown install target: %s", key)
+	}
+	if s.Installing {
+		inst.mu.Unlock()
+		return fmt.Errorf("already installing: %s", key)
+	}
+	if s.Installed {
+		inst.mu.Unlock()
+		return nil
+	}
+
+	s.Installing = true
+	s.Progress = "starting"
+	s.Error = ""
+	inst.statuses[key] = s
+	lb := inst.logs[key]
+	inst.mu.Unlock()
+
+	var ic InstallConfig
+	if bc, ok := inst.config.Backends[key]; ok && bc.Install.Method != "" {
+		ic = bc.Install
+	} else if pc, ok := inst.config.Processes[key]; ok && pc.Install.Method != "" {
+		ic = pc.Install
+	} else {
+		inst.mu.Lock()
+		s = inst.statuses[key]
+		s.Installing = false
+		s.Error = "no install config"
+		inst.statuses[key] = s
+		inst.mu.Unlock()
+		return fmt.Errorf("no install config for: %s", key)
+	}
+
+	err := inst.doInstall(key, ic, lb)
+
+	inst.mu.Lock()
+	s = inst.statuses[key]
+	s.Installing = false
+	if err != nil {
+		s.Error = err.Error()
+		s.Progress = "failed"
+	} else {
+		s.Installed = true
+		s.Progress = "done"
+	}
+	inst.statuses[key] = s
+	inst.mu.Unlock()
+
+	return err
+}
+
+func (inst *Installer) Status() map[string]InstallStatus {
+	inst.mu.RLock()
+	defer inst.mu.RUnlock()
+
+	result := make(map[string]InstallStatus, len(inst.statuses))
+	for k, s := range inst.statuses {
+		result[k] = *s
+	}
+	return result
+}
+
+func (inst *Installer) doInstall(key string, ic InstallConfig, lb *RingBuffer) error {
+	switch ic.Method {
+	case InstallZip:
+		return inst.installZip(key, ic, lb)
+	case InstallBinary:
+		return inst.installBinary(key, ic, lb)
+	case InstallPip:
+		return inst.installPip(key, ic, lb)
+	}
+	return fmt.Errorf("unknown install method: %s", ic.Method)
+}
+
+func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) error {
+	inst.setProgress(key, "downloading")
+	lb.Write(fmt.Sprintf("Downloading %s", ic.URL))
+
+	resp, err := http.Get(ic.URL)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	tmpFile, err := os.CreateTemp("", "sd-install-*.zip")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	size, err := io.Copy(tmpFile, resp.Body)
+	tmpFile.Close()
+	if err != nil {
+		return fmt.Errorf("save download: %w", err)
+	}
+	lb.Write(fmt.Sprintf("Downloaded %d bytes", size))
+
+	inst.setProgress(key, "extracting")
+	lb.Write(fmt.Sprintf("Extracting to %s", ic.Target))
+
+	if err := extractZip(tmpPath, ic.Target); err != nil {
+		return fmt.Errorf("extract: %w", err)
+	}
+
+	inst.setProgress(key, "verifying")
+	if ic.Version != "" {
+		renamed := filepath.Join(ic.Target+"-"+ic.Version, "*")
+		matches, _ := filepath.Glob(renamed)
+		if len(matches) > 0 {
+		}
+	}
+
+	lb.Write("Installation complete")
+	return nil
+}
+
+func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffer) error {
+	url := ic.URL
+	if strings.Contains(url, "{os}") || strings.Contains(url, "{arch}") {
+		url = strings.ReplaceAll(url, "{os}", runtime.GOOS)
+		url = strings.ReplaceAll(url, "{arch}", runtime.GOARCH)
+	}
+
+	inst.setProgress(key, "downloading")
+	lb.Write(fmt.Sprintf("Downloading %s", url))
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	targetDir := filepath.Dir(ic.Target)
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("create target dir: %w", err)
+	}
+
+	f, err := os.OpenFile(ic.Target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return fmt.Errorf("create binary: %w", err)
+	}
+
+	size, err := io.Copy(f, resp.Body)
+	f.Close()
+	if err != nil {
+		os.Remove(ic.Target)
+		return fmt.Errorf("save binary: %w", err)
+	}
+
+	if err := os.Chmod(ic.Target, 0755); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+
+	lb.Write(fmt.Sprintf("Installed binary %s (%d bytes)", ic.Target, size))
+	inst.setProgress(key, "done")
+	return nil
+}
+
+func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) error {
+	inst.setProgress(key, "checking pip")
+	pipPath, pipCmd := findPip(lb)
+	if pipPath == "" {
+		return fmt.Errorf("pip not found — install Python 3 first")
+	}
+
+	inst.setProgress(key, "installing "+ic.URL)
+	pkg := ic.URL
+	if pkg == "" {
+		pkg = ic.Target
+	}
+	lb.Write(fmt.Sprintf("Installing %s via %s", pkg, pipCmd))
+
+	cmd := exec.Command(pipPath, "install", pkg)
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		for _, line := range strings.Split(string(output), "\n") {
+			if line != "" {
+				lb.Write(line)
+			}
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("pip install: %w", err)
+	}
+
+	if ic.Target != "" {
+		targetPath, err := exec.LookPath(ic.Target)
+		if err != nil {
+			return fmt.Errorf("installed but %s not found in PATH", ic.Target)
+		}
+		lb.Write(fmt.Sprintf("Installed: %s", targetPath))
+	}
+
+	inst.setProgress(key, "done")
+	return nil
+}
+
+func (inst *Installer) checkInstalled(ic InstallConfig) bool {
+	switch ic.Method {
+	case InstallZip:
+		if ic.Target == "" {
+			return false
+		}
+		_, err := os.Stat(ic.Target)
+		return err == nil
+	case InstallBinary:
+		if ic.Target == "" {
+			return false
+		}
+		_, err := os.Stat(ic.Target)
+		return err == nil
+	case InstallPip:
+		if ic.Target == "" {
+			return false
+		}
+		_, err := exec.LookPath(ic.Target)
+		return err == nil
+	}
+	return false
+}
+
+func (inst *Installer) setProgress(key string, progress string) {
+	inst.mu.Lock()
+	s := inst.statuses[key]
+	s.Progress = progress
+	inst.statuses[key] = s
+	inst.mu.Unlock()
+}
+
+func (inst *Installer) handleAllStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, inst.Status())
+}
+
+func (inst *Installer) handleOneStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	key := strings.TrimPrefix(r.URL.Path, "/api/server/install/status/")
+	key = strings.TrimSuffix(key, "/")
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	inst.mu.RLock()
+	s, ok := inst.statuses[key]
+	inst.mu.RUnlock()
+	if !ok {
+		writeError(w, "unknown key: "+key, http.StatusNotFound)
+		return
+	}
+	writeJSON(w, s)
+}
+
+func (inst *Installer) handleInstall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/server/install/")
+	key := strings.TrimSuffix(path, "/")
+	if key == "" || strings.Contains(key, "/") {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	inst.mu.RLock()
+	_, ok := inst.statuses[key]
+	inst.mu.RUnlock()
+	if !ok {
+		writeError(w, "unknown install target: "+key, http.StatusNotFound)
+		return
+	}
+
+	go func() {
+		if err := inst.Install(key); err != nil {
+			log.Printf("Install %s failed: %v", key, err)
+		}
+	}()
+
+	writeJSON(w, map[string]string{"status": "installing", "key": key})
+}
+
+func (inst *Installer) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/server/install/logs/")
+	key := strings.TrimSuffix(path, "/")
+	if key == "" {
+		http.Error(w, "key required", http.StatusBadRequest)
+		return
+	}
+
+	inst.mu.RLock()
+	lb, ok := inst.logs[key]
+	inst.mu.RUnlock()
+	if !ok {
+		writeError(w, "unknown key: "+key, http.StatusNotFound)
+		return
+	}
+
+	lines := 50
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := parsePositiveInt(v); err == nil {
+			lines = n
+		}
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"key":   key,
+		"lines": lines,
+		"logs":  lb.Lines(lines),
+	})
+}
+
+func findPip(lb *RingBuffer) (string, string) {
+	candidates := []struct {
+		bin  string
+		name string
+	}{
+		{"pip3", "pip3"},
+		{"pip", "pip"},
+		{"uv", "uv pip"},
+	}
+
+	for _, c := range candidates {
+		path, err := exec.LookPath(c.bin)
+		if err == nil {
+			lb.Write(fmt.Sprintf("Found %s at %s", c.name, path))
+			if c.bin == "uv" {
+				return path, "uv pip"
+			}
+			return path, c.name
+		}
+	}
+
+	lb.Write("pip not found, trying get-pip.py fallback")
+	pipPath, err := installPipFallback(lb)
+	if err != nil {
+		lb.Write(fmt.Sprintf("Fallback failed: %v", err))
+		return "", ""
+	}
+	return pipPath, "pip3"
+}
+
+func installPipFallback(lb *RingBuffer) (string, error) {
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		return "", fmt.Errorf("python3 not found")
+	}
+
+	resp, err := http.Get("https://bootstrap.pypa.io/get-pip.py")
+	if err != nil {
+		return "", fmt.Errorf("download get-pip.py: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download get-pip.py: HTTP %d", resp.StatusCode)
+	}
+
+	tmpFile, err := os.CreateTemp("", "get-pip-*.py")
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		return "", fmt.Errorf("save get-pip.py: %w", err)
+	}
+	tmpFile.Close()
+
+	lb.Write("Installing pip via get-pip.py...")
+	cmd := exec.Command(pythonPath, tmpPath)
+	output, err := cmd.CombinedOutput()
+	if len(output) > 0 {
+		for _, line := range strings.Split(string(output), "\n") {
+			if line != "" {
+				lb.Write(line)
+			}
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("run get-pip.py: %w", err)
+	}
+
+	return exec.LookPath("pip3")
+}
+
+func extractZip(zipPath, targetDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return err
+	}
+
+	var topDir string
+	for _, f := range r.File {
+		if topDir == "" {
+			if idx := strings.Index(f.Name, "/"); idx >= 0 {
+				topDir = f.Name[:idx+1]
+			}
+		}
+
+		relPath := strings.TrimPrefix(f.Name, topDir)
+		if relPath == "" {
+			continue
+		}
+
+		destPath := filepath.Join(targetDir, relPath)
+
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(destPath, 0755)
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return err
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+
+		outFile, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY, f.Mode())
+		if err != nil {
+			rc.Close()
+			return err
+		}
+
+		_, err = io.Copy(outFile, rc)
+		outFile.Close()
+		rc.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func parsePositiveInt(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("invalid")
+		}
+		n = n*10 + int(c-'0')
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return n, nil
+}

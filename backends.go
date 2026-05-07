@@ -7,14 +7,16 @@ import (
 )
 
 type BackendManager struct {
-	config  *Config
-	manager *ProcessManager
+	config    *Config
+	manager   *ProcessManager
+	installer *Installer
 }
 
-func NewBackendManager(cfg *Config, pm *ProcessManager) *BackendManager {
+func NewBackendManager(cfg *Config, pm *ProcessManager, inst *Installer) *BackendManager {
 	return &BackendManager{
-		config:  cfg,
-		manager: pm,
+		config:    cfg,
+		manager:   pm,
+		installer: inst,
 	}
 }
 
@@ -85,6 +87,13 @@ func (bm *BackendManager) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, "unknown backend: "+req.Backend, http.StatusBadRequest)
 		return
+	}
+
+	if !bm.installer.IsInstalled(req.Backend) {
+		if err := bm.installer.Install(req.Backend); err != nil {
+			writeError(w, "installation failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Stop current SD process

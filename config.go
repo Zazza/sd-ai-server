@@ -16,6 +16,13 @@ type Config struct {
 	Backends  map[string]BackendConfig  `yaml:"backends"`
 }
 
+type InstallConfig struct {
+	Method  InstallMethod `yaml:"method"`
+	URL     string        `yaml:"url"`
+	Target  string        `yaml:"target"`
+	Version string        `yaml:"version"`
+}
+
 type ProcessConfig struct {
 	Name       string            `yaml:"name"`
 	Binary     string            `yaml:"binary"`
@@ -28,18 +35,20 @@ type ProcessConfig struct {
 	AutoStart  bool              `yaml:"autostart"`
 	Restart    bool              `yaml:"restart"`
 	MaxRestart int               `yaml:"max_restart"`
+	Install    InstallConfig     `yaml:"install"`
 }
 
 type BackendConfig struct {
-	Name         string `yaml:"name"`
-	ProcessKey   string `yaml:"process_key"`
-	Binary       string `yaml:"binary"`
-	Args         []string `yaml:"args"`
-	WorkDir      string `yaml:"workdir"`
-	ModelsDir    string `yaml:"models_dir"`
-	LoraDir      string `yaml:"lora_dir"`
-	VaeDir       string `yaml:"vae_dir"`
-	EmbeddingDir string `yaml:"embedding_dir"`
+	Name         string        `yaml:"name"`
+	ProcessKey   string        `yaml:"process_key"`
+	Binary       string        `yaml:"binary"`
+	Args         []string      `yaml:"args"`
+	WorkDir      string        `yaml:"workdir"`
+	ModelsDir    string        `yaml:"models_dir"`
+	LoraDir      string        `yaml:"lora_dir"`
+	VaeDir       string        `yaml:"vae_dir"`
+	EmbeddingDir string        `yaml:"embedding_dir"`
+	Install      InstallConfig `yaml:"install"`
 }
 
 var defaultConfig = Config{
@@ -66,6 +75,11 @@ var defaultConfig = Config{
 			AutoStart:  true,
 			Restart:    true,
 			MaxRestart: 5,
+			Install: InstallConfig{
+				Method: InstallBinary,
+				URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
+				Target: "/usr/local/bin/ollama",
+			},
 		},
 		"rembg": {
 			Name:       "Rembg",
@@ -77,6 +91,11 @@ var defaultConfig = Config{
 			AutoStart:  false,
 			Restart:    true,
 			MaxRestart: 3,
+			Install: InstallConfig{
+				Method: InstallPip,
+				URL:    "rembg",
+				Target: "rembg",
+			},
 		},
 	},
 	Backends: map[string]BackendConfig{
@@ -90,6 +109,12 @@ var defaultConfig = Config{
 			LoraDir:      "./stable-diffusion-webui-forge/models/Lora",
 			VaeDir:       "./stable-diffusion-webui-forge/models/VAE",
 			EmbeddingDir: "./stable-diffusion-webui-forge/embeddings",
+			Install: InstallConfig{
+				Method:  InstallZip,
+				URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
+				Target:  "./stable-diffusion-webui-forge",
+				Version: "main",
+			},
 		},
 		"a1111": {
 			Name:         "Stable Diffusion A1111",
@@ -101,6 +126,12 @@ var defaultConfig = Config{
 			LoraDir:      "./stable-diffusion-webui/models/Lora",
 			VaeDir:       "./stable-diffusion-webui/models/VAE",
 			EmbeddingDir: "./stable-diffusion-webui/embeddings",
+			Install: InstallConfig{
+				Method:  InstallZip,
+				URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
+				Target:  "./stable-diffusion-webui",
+				Version: "master",
+			},
 		},
 	},
 }
@@ -127,6 +158,7 @@ func Load(path string) (*Config, error) {
 
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
+	cfg.applyInstallDefaults()
 	return &cfg, nil
 }
 
@@ -154,6 +186,21 @@ func (c *Config) applyBackendToProcess() {
 	proc.Args = backend.Args
 	proc.WorkDir = backend.WorkDir
 	c.Processes[backend.ProcessKey] = proc
+}
+
+func (c *Config) applyInstallDefaults() {
+	for key, def := range defaultConfig.Backends {
+		if bc, ok := c.Backends[key]; ok && bc.Install.Method == "" && def.Install.Method != "" {
+			bc.Install = def.Install
+			c.Backends[key] = bc
+		}
+	}
+	for key, def := range defaultConfig.Processes {
+		if pc, ok := c.Processes[key]; ok && pc.Install.Method == "" && def.Install.Method != "" {
+			pc.Install = def.Install
+			c.Processes[key] = pc
+		}
+	}
 }
 
 func (c *Config) GetActiveBackend() *BackendConfig {
