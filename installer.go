@@ -85,6 +85,25 @@ func (inst *Installer) IsInstalled(key string) bool {
 	return s.Installed
 }
 
+func (inst *Installer) EnsureInstalled(key, binary string) error {
+	if binary != "" {
+		if strings.ContainsRune(binary, '/') {
+			if _, err := os.Stat(binary); err == nil {
+				return nil
+			}
+		} else {
+			if _, err := exec.LookPath(binary); err == nil {
+				return nil
+			}
+		}
+	}
+	ic := inst.getConfig(key)
+	if ic == nil {
+		return nil
+	}
+	return inst.Install(key)
+}
+
 func (inst *Installer) ensureStatus(key string) *RingBuffer {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
@@ -187,6 +206,7 @@ func (inst *Installer) doInstall(key string, ic InstallConfig, lb *RingBuffer) e
 func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) error {
 	inst.setProgress(key, "downloading")
 	lb.Write(fmt.Sprintf("Downloading %s", ic.URL))
+	log.Printf("[%s] downloading %s", key, ic.URL)
 
 	resp, err := http.Get(ic.URL)
 	if err != nil {
@@ -211,15 +231,18 @@ func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) 
 		return fmt.Errorf("save download: %w", err)
 	}
 	lb.Write(fmt.Sprintf("Downloaded %d bytes", size))
+	log.Printf("[%s] downloaded %d bytes", key, size)
 
 	inst.setProgress(key, "extracting")
 	lb.Write(fmt.Sprintf("Extracting to %s", ic.Target))
+	log.Printf("[%s] extracting to %s", key, ic.Target)
 
 	if err := extractZip(tmpPath, ic.Target); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
 
 	lb.Write("Installation complete")
+	log.Printf("[%s] installed to %s", key, ic.Target)
 	return nil
 }
 
@@ -232,6 +255,7 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 
 	inst.setProgress(key, "downloading")
 	lb.Write(fmt.Sprintf("Downloading %s", url))
+	log.Printf("[%s] downloading %s", key, url)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -265,7 +289,7 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 	}
 
 	lb.Write(fmt.Sprintf("Installed binary %s (%d bytes)", ic.Target, size))
-	inst.setProgress(key, "done")
+	log.Printf("[%s] installed binary %s (%d bytes)", key, ic.Target, size)
 	return nil
 }
 
@@ -282,6 +306,7 @@ func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) 
 		pkg = ic.Target
 	}
 	lb.Write(fmt.Sprintf("Installing %s via %s", pkg, pipCmd))
+	log.Printf("[%s] installing %s via %s", key, pkg, pipCmd)
 
 	cmd := exec.Command(pipPath, "install", pkg)
 	output, err := cmd.CombinedOutput()
@@ -302,9 +327,9 @@ func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) 
 			return fmt.Errorf("installed but %s not found in PATH", ic.Target)
 		}
 		lb.Write(fmt.Sprintf("Installed: %s", targetPath))
+		log.Printf("[%s] installed: %s", key, targetPath)
 	}
 
-	inst.setProgress(key, "done")
 	return nil
 }
 
@@ -521,7 +546,13 @@ func extractZip(zipPath, targetDir string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+
+	success := false
+	defer func() {
+		if !success {
+			os.RemoveAll(tmpDir)
+		}
+	}()
 
 	for _, f := range r.File {
 		if f.Name == "" {
@@ -568,7 +599,70 @@ func extractZip(zipPath, targetDir string) error {
 		return fmt.Errorf("remove old target: %w", err)
 	}
 
-	return os.Rename(tmpDir, targetDir)
+	if err := renameOrCopy(tmpDir, targetDir); err != nil {
+		return fmt.Errorf("move to target: %w", err)
+	}
+
+	success = true
+	return nil
+}
+
+func renameOrCopy(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	}
+
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := renameOrCopy(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			if err := copyFile(srcPath, dstPath); err != nil {
+				return err
+			}
+		}
+	}
+
+	return os.RemoveAll(src)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	if err != nil {
+		return err
+	}
+
+	_, err = io.Copy(out, in)
+	out.Close()
+	return err
 }
 
 func parsePositiveInt(s string) (int, error) {

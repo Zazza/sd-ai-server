@@ -28,14 +28,19 @@ func main() {
 	}
 
 	log.Printf("SD Studio Server starting on port %d (backend: %s)", cfg.Port, cfg.ActiveSD)
+	log.Printf("Data directory: %s", cfg.DataDir)
+
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		log.Fatalf("Failed to create data directory %s: %v", cfg.DataDir, err)
+	}
 
 	// Initialize components
-	pm := NewProcessManager(cfg)
+	inst := NewInstaller(cfg)
+	pm := NewProcessManager(cfg, inst)
 	proxy := NewProxyHandler(pm, cfg)
 	hm := NewHealthMonitor(cfg)
 	gm := NewGPUMonitor()
 	mm := NewModelManager(cfg)
-	inst := NewInstaller(cfg)
 	bm := NewBackendManager(cfg, pm, inst)
 	handlers := NewHandlers(pm, hm, gm, cfg, inst)
 

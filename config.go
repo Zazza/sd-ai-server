@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -11,6 +13,7 @@ import (
 type Config struct {
 	Port      int                       `yaml:"port"`
 	MDNS      bool                      `yaml:"mdns"`
+	DataDir   string                    `yaml:"data_dir"`
 	ActiveSD  string                    `yaml:"active_sd"`
 	Processes map[string]ProcessConfig  `yaml:"processes"`
 	Backends  map[string]BackendConfig  `yaml:"backends"`
@@ -51,9 +54,18 @@ type BackendConfig struct {
 	Install      InstallConfig `yaml:"install"`
 }
 
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "sd-studio-server"
+	}
+	return filepath.Join(home, "sd-studio-server")
+}
+
 var defaultConfig = Config{
 	Port:     8080,
 	MDNS:     true,
+	DataDir:  "",
 	ActiveSD: "forge",
 	Processes: map[string]ProcessConfig{
 		"sd": {
@@ -67,7 +79,7 @@ var defaultConfig = Config{
 		},
 		"ollama": {
 			Name:       "Ollama",
-			Binary:     "ollama",
+			Binary:     "bin/ollama",
 			Args:       []string{"serve"},
 			HealthURL:  "http://localhost:11434/api/tags",
 			TargetURL:  "http://localhost:11434",
@@ -78,7 +90,7 @@ var defaultConfig = Config{
 			Install: InstallConfig{
 				Method: InstallBinary,
 				URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
-				Target: "/usr/local/bin/ollama",
+				Target: "bin/ollama",
 			},
 		},
 		"rembg": {
@@ -102,34 +114,34 @@ var defaultConfig = Config{
 		"forge": {
 			Name:         "Stable Diffusion Forge",
 			ProcessKey:   "sd",
-			Binary:       "./stable-diffusion-webui-forge/webui.sh",
+			Binary:       "stable-diffusion-webui-forge/webui.sh",
 			Args:         []string{"--listen", "--api", "--xformers"},
-			WorkDir:      "./stable-diffusion-webui-forge",
-			ModelsDir:    "./stable-diffusion-webui-forge/models/Stable-diffusion",
-			LoraDir:      "./stable-diffusion-webui-forge/models/Lora",
-			VaeDir:       "./stable-diffusion-webui-forge/models/VAE",
-			EmbeddingDir: "./stable-diffusion-webui-forge/embeddings",
+			WorkDir:      "stable-diffusion-webui-forge",
+			ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
+			LoraDir:      "stable-diffusion-webui-forge/models/Lora",
+			VaeDir:       "stable-diffusion-webui-forge/models/VAE",
+			EmbeddingDir: "stable-diffusion-webui-forge/embeddings",
 			Install: InstallConfig{
 				Method:  InstallZip,
 				URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
-				Target:  "./stable-diffusion-webui-forge",
+				Target:  "stable-diffusion-webui-forge",
 				Version: "main",
 			},
 		},
 		"a1111": {
 			Name:         "Stable Diffusion A1111",
 			ProcessKey:   "sd",
-			Binary:       "./stable-diffusion-webui/webui.sh",
+			Binary:       "stable-diffusion-webui/webui.sh",
 			Args:         []string{"--listen", "--api", "--xformers"},
-			WorkDir:      "./stable-diffusion-webui",
-			ModelsDir:    "./stable-diffusion-webui/models/Stable-diffusion",
-			LoraDir:      "./stable-diffusion-webui/models/Lora",
-			VaeDir:       "./stable-diffusion-webui/models/VAE",
-			EmbeddingDir: "./stable-diffusion-webui/embeddings",
+			WorkDir:      "stable-diffusion-webui",
+			ModelsDir:    "stable-diffusion-webui/models/Stable-diffusion",
+			LoraDir:      "stable-diffusion-webui/models/Lora",
+			VaeDir:       "stable-diffusion-webui/models/VAE",
+			EmbeddingDir: "stable-diffusion-webui/embeddings",
 			Install: InstallConfig{
 				Method:  InstallZip,
 				URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
-				Target:  "./stable-diffusion-webui",
+				Target:  "stable-diffusion-webui",
 				Version: "master",
 			},
 		},
@@ -144,13 +156,13 @@ func init() {
 		"forge": {
 			Method:  InstallZip,
 			URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
-			Target:  "./stable-diffusion-webui-forge",
+			Target:  "stable-diffusion-webui-forge",
 			Version: "main",
 		},
 		"a1111": {
 			Method:  InstallZip,
 			URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
-			Target:  "./stable-diffusion-webui",
+			Target:  "stable-diffusion-webui",
 			Version: "master",
 		},
 	}
@@ -158,7 +170,7 @@ func init() {
 		"ollama": {
 			Method: InstallBinary,
 			URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
-			Target: "/usr/local/bin/ollama",
+			Target: "bin/ollama",
 		},
 		"rembg": {
 			Method: InstallPip,
@@ -177,8 +189,11 @@ func Load(path string) (*Config, error) {
 			if writeErr := WriteTemplate(path); writeErr != nil {
 				return nil, fmt.Errorf("create default config: %w", writeErr)
 			}
+			cfg.DataDir = defaultDataDir()
 			cfg.applyEnvOverrides()
 			cfg.applyBackendToProcess()
+			cfg.applyInstallDefaults()
+			cfg.resolvePaths()
 			return &cfg, nil
 		}
 		return nil, fmt.Errorf("read config: %w", err)
@@ -188,10 +203,41 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	if cfg.DataDir == "" {
+		cfg.DataDir = defaultDataDir()
+	}
+
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
 	cfg.applyInstallDefaults()
+	cfg.resolvePaths()
 	return &cfg, nil
+}
+
+func (c *Config) resolvePaths() {
+	for key, pc := range c.Processes {
+		pc.Binary = resolveRelPath(c.DataDir, pc.Binary)
+		pc.WorkDir = resolveRelPath(c.DataDir, pc.WorkDir)
+		pc.Install.Target = resolveRelPath(c.DataDir, pc.Install.Target)
+		c.Processes[key] = pc
+	}
+	for key, bc := range c.Backends {
+		bc.Binary = resolveRelPath(c.DataDir, bc.Binary)
+		bc.WorkDir = resolveRelPath(c.DataDir, bc.WorkDir)
+		bc.ModelsDir = resolveRelPath(c.DataDir, bc.ModelsDir)
+		bc.LoraDir = resolveRelPath(c.DataDir, bc.LoraDir)
+		bc.VaeDir = resolveRelPath(c.DataDir, bc.VaeDir)
+		bc.EmbeddingDir = resolveRelPath(c.DataDir, bc.EmbeddingDir)
+		bc.Install.Target = resolveRelPath(c.DataDir, bc.Install.Target)
+		c.Backends[key] = bc
+	}
+}
+
+func resolveRelPath(baseDir, p string) string {
+	if p == "" || filepath.IsAbs(p) || !strings.ContainsRune(p, '/') {
+		return p
+	}
+	return filepath.Join(baseDir, p)
 }
 
 func (c *Config) applyEnvOverrides() {
@@ -202,6 +248,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("SD_ACTIVE_BACKEND"); v != "" {
 		c.ActiveSD = v
+	}
+	if v := os.Getenv("SD_DATA_DIR"); v != "" {
+		c.DataDir = v
 	}
 }
 
@@ -244,7 +293,9 @@ func (c *Config) GetActiveBackend() *BackendConfig {
 }
 
 func WriteTemplate(path string) error {
-	data, err := yaml.Marshal(&defaultConfig)
+	cfg := defaultConfig
+	cfg.DataDir = defaultDataDir()
+	data, err := yaml.Marshal(&cfg)
 	if err != nil {
 		return err
 	}

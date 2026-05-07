@@ -78,11 +78,13 @@ type ManagedProcess struct {
 type ProcessManager struct {
 	mu        sync.RWMutex
 	processes map[string]*ManagedProcess
+	installer *Installer
 }
 
-func NewProcessManager(cfg *Config) *ProcessManager {
+func NewProcessManager(cfg *Config, inst *Installer) *ProcessManager {
 	pm := &ProcessManager{
 		processes: make(map[string]*ManagedProcess),
+		installer: inst,
 	}
 	for key, pc := range cfg.Processes {
 		pm.processes[key] = &ManagedProcess{
@@ -128,6 +130,17 @@ func (pm *ProcessManager) start(name string) error {
 
 	mp.Status = "starting"
 	pm.mu.Unlock()
+
+	if pm.installer != nil {
+		if err := pm.installer.EnsureInstalled(name, mp.Config.Binary); err != nil {
+			pm.mu.Lock()
+			mp.Status = "crashed"
+			mp.logBuf.Write(fmt.Sprintf("auto-install failed: %v", err))
+			pm.processes[name] = mp
+			pm.mu.Unlock()
+			return fmt.Errorf("auto-install %q: %w", name, err)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, mp.Config.Binary, mp.Config.Args...)
