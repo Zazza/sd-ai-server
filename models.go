@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -37,6 +38,7 @@ func (m *ModelManager) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/server/models/lora", m.handleLoRAModels)
 	mux.HandleFunc("/api/server/models/vae", m.handleVAEModels)
 	mux.HandleFunc("/api/server/models/llm", m.handleLLMModels)
+	mux.HandleFunc("/api/server/models/llm/pull", m.handleLLMPullStream)
 }
 
 func (m *ModelManager) handleSDModels(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +135,69 @@ func (m *ModelManager) handleLLMModels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (m *ModelManager) handleLLMPullStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	cmd := exec.Command(m.ollamaBinary(), "pull", name)
+	cmd.Env = m.ollamaEnv()
+
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
+
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(w, "data: [ERROR] %s\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+
+	done := make(chan struct{})
+	go m.streamOutput(stdout, w, flusher, done)
+	go m.streamOutput(stderr, w, flusher, done)
+
+	err := cmd.Wait()
+	<-done
+	<-done
+
+	if err != nil {
+		fmt.Fprintf(w, "data: [ERROR] pull failed: %s\n\n", err.Error())
+	} else {
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+	}
+	flusher.Flush()
+}
+
+func (m *ModelManager) streamOutput(r io.Reader, w http.ResponseWriter, f http.Flusher, done chan struct{}) {
+	defer func() { done <- struct{}{} }()
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		fmt.Fprintf(w, "data: %s\n\n", line)
+		f.Flush()
+	}
+}
+
 func (m *ModelManager) ListModels(dir string) ([]ModelInfo, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("directory not configured")
@@ -212,7 +277,8 @@ func (m *ModelManager) DeleteModel(dir, filename string) error {
 }
 
 func (m *ModelManager) PullLLMModel(name string) error {
-	cmd := exec.Command("ollama", "pull", name)
+	cmd := exec.Command(m.ollamaBinary(), "pull", name)
+	cmd.Env = m.ollamaEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ollama pull %s: %s: %w", name, string(output), err)
@@ -221,7 +287,8 @@ func (m *ModelManager) PullLLMModel(name string) error {
 }
 
 func (m *ModelManager) ListLLMModels() ([]LLMModelInfo, error) {
-	cmd := exec.Command("ollama", "list")
+	cmd := exec.Command(m.ollamaBinary(), "list")
+	cmd.Env = m.ollamaEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("ollama list: %s: %w", string(output), err)
@@ -244,12 +311,28 @@ func (m *ModelManager) ListLLMModels() ([]LLMModelInfo, error) {
 }
 
 func (m *ModelManager) DeleteLLMModel(name string) error {
-	cmd := exec.Command("ollama", "rm", name)
+	cmd := exec.Command(m.ollamaBinary(), "rm", name)
+	cmd.Env = m.ollamaEnv()
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ollama rm %s: %s: %w", name, string(output), err)
 	}
 	return nil
+}
+
+func (m *ModelManager) ollamaBinary() string {
+	if pc, ok := m.config.Processes["ollama"]; ok && pc.Binary != "" {
+		return pc.Binary
+	}
+	return "ollama"
+}
+
+func (m *ModelManager) ollamaModelsDir() string {
+	return filepath.Join(m.config.DataDir, "models", "ollama")
+}
+
+func (m *ModelManager) ollamaEnv() []string {
+	return append(os.Environ(), "OLLAMA_MODELS="+m.ollamaModelsDir())
 }
 
 // RegisterDeleteRoutes registers DELETE endpoints for model deletion

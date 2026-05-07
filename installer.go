@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 type InstallMethod string
@@ -205,8 +206,8 @@ func (inst *Installer) doInstall(key string, ic InstallConfig, lb *RingBuffer) e
 
 func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) error {
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s", ic.URL))
-	log.Printf("[%s] downloading %s", key, ic.URL)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", ic.URL, ic.Target))
+	log.Printf("[%s] downloading %s -> %s", key, ic.URL, ic.Target)
 
 	resp, err := http.Get(ic.URL)
 	if err != nil {
@@ -225,13 +226,23 @@ func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) 
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
-	size, err := io.Copy(tmpFile, resp.Body)
+	pw := &progressWriter{
+		w:        tmpFile,
+		total:    resp.ContentLength,
+		key:      key,
+		target:   ic.Target,
+		lastLog:  0,
+		lastTime: 0,
+		inst:     inst,
+		lb:       lb,
+	}
+	size, err := io.Copy(pw, resp.Body)
 	tmpFile.Close()
 	if err != nil {
 		return fmt.Errorf("save download: %w", err)
 	}
-	lb.Write(fmt.Sprintf("Downloaded %d bytes", size))
-	log.Printf("[%s] downloaded %d bytes", key, size)
+	lb.Write(fmt.Sprintf("Downloaded %s", formatBytes(size)))
+	log.Printf("[%s] downloaded %s", key, formatBytes(size))
 
 	inst.setProgress(key, "extracting")
 	lb.Write(fmt.Sprintf("Extracting to %s", ic.Target))
@@ -254,8 +265,8 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 	}
 
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s", url))
-	log.Printf("[%s] downloading %s", key, url)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", url, ic.Target))
+	log.Printf("[%s] downloading %s -> %s", key, url, ic.Target)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -277,7 +288,18 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 		return fmt.Errorf("create binary: %w", err)
 	}
 
-	size, err := io.Copy(f, resp.Body)
+	totalSize := resp.ContentLength
+	pw := &progressWriter{
+		w:        f,
+		total:    totalSize,
+		key:      key,
+		target:   ic.Target,
+		lastLog:  0,
+		lastTime: 0,
+		inst:     inst,
+		lb:       lb,
+	}
+	size, err := io.Copy(pw, resp.Body)
 	f.Close()
 	if err != nil {
 		os.Remove(ic.Target)
@@ -288,9 +310,62 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	lb.Write(fmt.Sprintf("Installed binary %s (%d bytes)", ic.Target, size))
-	log.Printf("[%s] installed binary %s (%d bytes)", key, ic.Target, size)
+	lb.Write(fmt.Sprintf("Installed binary %s (%s)", ic.Target, formatBytes(size)))
+	log.Printf("[%s] installed binary %s (%s)", key, ic.Target, formatBytes(size))
 	return nil
+}
+
+type progressWriter struct {
+	w        io.Writer
+	total    int64
+	written  int64
+	key      string
+	target   string
+	lastLog  int64
+	lastTime int64
+	inst     *Installer
+	lb       *RingBuffer
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n, err := pw.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	pw.written += int64(n)
+	now := time.Now().UnixMilli()
+	shouldLog := pw.written-pw.lastLog >= 10*1024*1024 || now-pw.lastTime >= 5000
+	if shouldLog {
+		pw.lastLog = pw.written
+		pw.lastTime = now
+		pct := ""
+		if pw.total > 0 {
+			pct = fmt.Sprintf(" (%.0f%%)", float64(pw.written)/float64(pw.total)*100)
+		}
+		msg := fmt.Sprintf("Downloading %s%s", formatBytes(pw.written), pct)
+		pw.inst.setProgress(pw.key, msg)
+		pw.lb.Write(msg)
+		log.Printf("[%s] %s", pw.key, msg)
+	}
+	return n, nil
+}
+
+func formatBytes(b int64) string {
+	const (
+		KB = 1024
+		MB = KB * 1024
+		GB = MB * 1024
+	)
+	switch {
+	case b >= GB:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
+	case b >= MB:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
+	case b >= KB:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) error {

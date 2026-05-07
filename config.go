@@ -81,6 +81,7 @@ var defaultConfig = Config{
 			Name:       "Ollama",
 			Binary:     "bin/ollama",
 			Args:       []string{"serve"},
+			Env:        map[string]string{"OLLAMA_MODELS": "models/ollama"},
 			HealthURL:  "http://localhost:11434/api/tags",
 			TargetURL:  "http://localhost:11434",
 			ProxyPath:  "/api/llm/",
@@ -219,6 +220,9 @@ func (c *Config) resolvePaths() {
 		pc.Binary = resolveRelPath(c.DataDir, pc.Binary)
 		pc.WorkDir = resolveRelPath(c.DataDir, pc.WorkDir)
 		pc.Install.Target = resolveRelPath(c.DataDir, pc.Install.Target)
+		for ek, ev := range pc.Env {
+			pc.Env[ek] = resolveRelPath(c.DataDir, ev)
+		}
 		c.Processes[key] = pc
 	}
 	for key, bc := range c.Backends {
