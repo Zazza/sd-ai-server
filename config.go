@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -54,6 +55,36 @@ type BackendConfig struct {
 	Install      InstallConfig `yaml:"install"`
 }
 
+func pythonArchiveURL() string {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "darwin/arm64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-aarch64-apple-darwin-install_only.tar.gz"
+	case "darwin/amd64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-x86_64-apple-darwin-install_only.tar.gz"
+	case "linux/amd64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-x86_64-unknown-linux-gnu-install_only.tar.gz"
+	case "linux/arm64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-aarch64-unknown-linux-gnu-install_only.tar.gz"
+	case "windows/amd64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-x86_64-pc-windows-msvc-shared-install_only.tar.gz"
+	case "windows/arm64":
+		return "https://github.com/astral-sh/python-build-standalone/releases/download/20241016/cpython-3.10.15%2B20241016-aarch64-pc-windows-msvc-shared-install_only.tar.gz"
+	}
+	return ""
+}
+
+func ollamaArchiveURL() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-darwin.tgz"
+	case "linux":
+		return fmt.Sprintf("https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-linux-%s.tar.zst", runtime.GOARCH)
+	case "windows":
+		return fmt.Sprintf("https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-windows-%s.zip", runtime.GOARCH)
+	}
+	return ""
+}
+
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -68,6 +99,10 @@ var defaultConfig = Config{
 	DataDir:  "",
 	ActiveSD: "forge",
 	Processes: map[string]ProcessConfig{
+		"python": {
+			Name:      "Python 3.10",
+			AutoStart: false,
+		},
 		"sd": {
 			Name:       "Stable Diffusion",
 			HealthURL:  "http://localhost:7860/sdapi/v1/options",
@@ -76,6 +111,7 @@ var defaultConfig = Config{
 			AutoStart:  true,
 			Restart:    true,
 			MaxRestart: 5,
+			Env:        map[string]string{"PYTHON": "python/bin/python3"},
 		},
 		"ollama": {
 			Name:       "Ollama",
@@ -89,8 +125,8 @@ var defaultConfig = Config{
 			Restart:    true,
 			MaxRestart: 5,
 			Install: InstallConfig{
-				Method: InstallBinary,
-				URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
+				Method: InstallArchive,
+				URL:    ollamaArchiveURL(),
 				Target: "bin/ollama",
 			},
 		},
@@ -169,14 +205,19 @@ func init() {
 	}
 	installDefaultsProcesses = map[string]InstallConfig{
 		"ollama": {
-			Method: InstallBinary,
-			URL:    "https://github.com/ollama/ollama/releases/download/v0.6.8/ollama-{os}-{arch}",
+			Method: InstallArchive,
+			URL:    ollamaArchiveURL(),
 			Target: "bin/ollama",
 		},
 		"rembg": {
 			Method: InstallPip,
 			URL:    "rembg",
 			Target: "rembg",
+		},
+		"python": {
+			Method: InstallTgz,
+			URL:    pythonArchiveURL(),
+			Target: "python",
 		},
 	}
 }
@@ -218,8 +259,8 @@ func Load(path string) (*Config, error) {
 func (c *Config) resolvePaths() {
 	for key, pc := range c.Processes {
 		pc.Binary = resolveRelPath(c.DataDir, pc.Binary)
-		pc.WorkDir = resolveRelPath(c.DataDir, pc.WorkDir)
-		pc.Install.Target = resolveRelPath(c.DataDir, pc.Install.Target)
+		pc.WorkDir = resolveDirPath(c.DataDir, pc.WorkDir)
+		pc.Install.Target = resolveInstallTarget(c.DataDir, pc.Install)
 		for ek, ev := range pc.Env {
 			pc.Env[ek] = resolveRelPath(c.DataDir, ev)
 		}
@@ -227,18 +268,35 @@ func (c *Config) resolvePaths() {
 	}
 	for key, bc := range c.Backends {
 		bc.Binary = resolveRelPath(c.DataDir, bc.Binary)
-		bc.WorkDir = resolveRelPath(c.DataDir, bc.WorkDir)
-		bc.ModelsDir = resolveRelPath(c.DataDir, bc.ModelsDir)
-		bc.LoraDir = resolveRelPath(c.DataDir, bc.LoraDir)
-		bc.VaeDir = resolveRelPath(c.DataDir, bc.VaeDir)
-		bc.EmbeddingDir = resolveRelPath(c.DataDir, bc.EmbeddingDir)
-		bc.Install.Target = resolveRelPath(c.DataDir, bc.Install.Target)
+		bc.WorkDir = resolveDirPath(c.DataDir, bc.WorkDir)
+		bc.ModelsDir = resolveDirPath(c.DataDir, bc.ModelsDir)
+		bc.LoraDir = resolveDirPath(c.DataDir, bc.LoraDir)
+		bc.VaeDir = resolveDirPath(c.DataDir, bc.VaeDir)
+		bc.EmbeddingDir = resolveDirPath(c.DataDir, bc.EmbeddingDir)
+		bc.Install.Target = resolveInstallTarget(c.DataDir, bc.Install)
 		c.Backends[key] = bc
 	}
 }
 
+func resolveInstallTarget(baseDir string, ic InstallConfig) string {
+	if ic.Method == InstallPip {
+		return ic.Target
+	}
+	if ic.Target == "" || filepath.IsAbs(ic.Target) {
+		return ic.Target
+	}
+	return filepath.Join(baseDir, ic.Target)
+}
+
 func resolveRelPath(baseDir, p string) string {
 	if p == "" || filepath.IsAbs(p) || !strings.ContainsRune(p, '/') {
+		return p
+	}
+	return filepath.Join(baseDir, p)
+}
+
+func resolveDirPath(baseDir, p string) string {
+	if p == "" || filepath.IsAbs(p) {
 		return p
 	}
 	return filepath.Join(baseDir, p)
@@ -270,6 +328,9 @@ func (c *Config) applyBackendToProcess() {
 	proc.Binary = backend.Binary
 	proc.Args = backend.Args
 	proc.WorkDir = backend.WorkDir
+	if proc.Install.Method == "" && backend.Install.Method != "" {
+		proc.Install = backend.Install
+	}
 	c.Processes[backend.ProcessKey] = proc
 }
 

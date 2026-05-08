@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"sync"
 	"time"
@@ -138,6 +139,7 @@ func (pm *ProcessManager) start(name string) error {
 			mp.logBuf.Write(fmt.Sprintf("auto-install failed: %v", err))
 			pm.processes[name] = mp
 			pm.mu.Unlock()
+			log.Printf("[%s] auto-install failed: %v", name, err)
 			return fmt.Errorf("auto-install %q: %w", name, err)
 		}
 	}
@@ -169,10 +171,11 @@ func (pm *ProcessManager) start(name string) error {
 	if err := cmd.Start(); err != nil {
 		pm.mu.Lock()
 		mp.Status = "crashed"
+		mp.logBuf.Write(fmt.Sprintf("failed to start: %v (binary=%s workdir=%s)", err, mp.Config.Binary, mp.Config.WorkDir))
 		pm.processes[name] = mp
 		pm.mu.Unlock()
 		cancel()
-		return fmt.Errorf("start %q: %w", name, err)
+		return fmt.Errorf("start %q: %w (binary=%s)", name, err, mp.Config.Binary)
 	}
 
 	mp.PID = cmd.Process.Pid
