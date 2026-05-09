@@ -8,17 +8,37 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 )
 
 func main() {
-	configPath := flag.String("config", "server-config.yaml", "path to config file")
+	dataDir := flag.String("data", "", "data directory (default: ~/sd-studio-server)")
+	configPath := flag.String("config", "", "config file path (default: {data-dir}/server-config.yaml)")
 	port := flag.Int("port", 0, "override server port")
 	flag.Parse()
 
+	// Resolve data dir first
+	dir := *dataDir
+	if dir == "" {
+		dir = defaultDataDir()
+	}
+	dir, _ = filepath.Abs(dir)
+
+	// Config path defaults to {data-dir}/server-config.yaml
+	cfgFile := *configPath
+	if cfgFile == "" {
+		cfgFile = filepath.Join(dir, "server-config.yaml")
+	}
+
+	// Ensure data directory exists
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Fatalf("Failed to create data directory %s: %v", dir, err)
+	}
+
 	// Load config
-	cfg, err := Load(*configPath)
+	cfg, err := LoadWithDir(cfgFile, dir)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -30,10 +50,6 @@ func main() {
 	log.Printf("SD Studio Server starting on port %d (backend: %s)", cfg.Port, cfg.ActiveSD)
 	log.Printf("Data directory: %s", cfg.DataDir)
 
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory %s: %v", cfg.DataDir, err)
-	}
-
 	// Initialize components
 	inst := NewInstaller(cfg)
 	pm := NewProcessManager(cfg, inst)
@@ -41,7 +57,7 @@ func main() {
 	hm := NewHealthMonitor(cfg)
 	gm := NewGPUMonitor()
 	mm := NewModelManager(cfg)
-	bm := NewBackendManager(cfg, pm, inst)
+	bm := NewBackendManager(cfg)
 	handlers := NewHandlers(pm, hm, gm, cfg, inst)
 
 	// Setup HTTP mux
@@ -75,6 +91,9 @@ func main() {
 	// Start context for background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Install all components in dependency order (python → forge → ollama → rembg)
+	inst.EnsureAllInstalled()
 
 	// Start auto-start processes
 	pm.StartAll()

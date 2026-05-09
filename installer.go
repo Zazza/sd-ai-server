@@ -90,6 +90,25 @@ func (inst *Installer) IsInstalled(key string) bool {
 	return s.Installed
 }
 
+var installOrder = []string{"python", "forge", "ollama", "rembg"}
+
+func (inst *Installer) EnsureAllInstalled() {
+	for _, key := range installOrder {
+		ic := inst.getConfig(key)
+		if ic == nil {
+			continue
+		}
+		if inst.IsInstalled(key) {
+			log.Printf("[%s] already installed, skipping", key)
+			continue
+		}
+		log.Printf("[%s] installing...", key)
+		if err := inst.Install(key); err != nil {
+			log.Printf("[%s] install failed: %v (will retry on process start)", key, err)
+		}
+	}
+}
+
 func (inst *Installer) EnsureInstalled(key, binary string) error {
 	if binary != "" {
 		if strings.ContainsRune(binary, '/') {
@@ -454,6 +473,14 @@ func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) 
 		return fmt.Errorf("extract: %w", err)
 	}
 
+	if key == "python" {
+		createPythonSymlinks(ic.Target, lb)
+	}
+
+	if key == "forge" {
+		ensureForgeVenv(inst.config.DataDir, ic.Target, lb)
+	}
+
 	lb.Write("Installation complete")
 	log.Printf("[%s] installed to %s", key, ic.Target)
 	return nil
@@ -707,7 +734,7 @@ func formatBytes(b int64) string {
 
 func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) error {
 	inst.setProgress(key, "checking pip")
-	pipPath, pipCmd := findPip(lb)
+	pipPath, pipCmd := findPipForDataDir(inst.config.DataDir, lb)
 	if pipPath == "" {
 		return fmt.Errorf("pip not found — install Python 3 first")
 	}
@@ -734,9 +761,9 @@ func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) 
 	}
 
 	if ic.Target != "" {
-		targetPath, err := exec.LookPath(ic.Target)
-		if err != nil {
-			return fmt.Errorf("installed but %s not found in PATH", ic.Target)
+		targetPath := findBinary(inst.config.DataDir, ic.Target)
+		if targetPath == "" {
+			return fmt.Errorf("installed but %s not found", ic.Target)
 		}
 		lb.Write(fmt.Sprintf("Installed: %s", targetPath))
 		log.Printf("[%s] installed: %s", key, targetPath)
@@ -763,10 +790,21 @@ func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 		if ic.Target == "" {
 			return false
 		}
-		_, err := exec.LookPath(ic.Target)
-		return err == nil
+		return findBinary(inst.config.DataDir, ic.Target) != ""
 	}
 	return false
+}
+
+func findBinary(dataDir, name string) string {
+	bundled := filepath.Join(dataDir, "python", "bin", name)
+	if _, err := os.Stat(bundled); err == nil {
+		return bundled
+	}
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path
+	}
+	return ""
 }
 
 func (inst *Installer) setProgress(key string, progress string) {
@@ -871,29 +909,38 @@ func (inst *Installer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func findPip(lb *RingBuffer) (string, string) {
+func findPipForDataDir(dataDir string, lb *RingBuffer) (string, string) {
 	candidates := []struct {
 		bin  string
 		name string
 	}{
+		{filepath.Join(dataDir, "python", "bin", "pip3"), "bundled pip3"},
+		{filepath.Join(dataDir, "python", "bin", "pip"), "bundled pip"},
 		{"pip3", "pip3"},
 		{"pip", "pip"},
 		{"uv", "uv pip"},
 	}
 
 	for _, c := range candidates {
-		path, err := exec.LookPath(c.bin)
-		if err == nil {
-			lb.Write(fmt.Sprintf("Found %s at %s", c.name, path))
-			if c.bin == "uv" {
-				return path, "uv pip"
+		if strings.ContainsRune(c.bin, '/') {
+			if _, err := os.Stat(c.bin); err == nil {
+				lb.Write(fmt.Sprintf("Found %s at %s", c.name, c.bin))
+				return c.bin, c.name
 			}
-			return path, c.name
+		} else {
+			path, err := exec.LookPath(c.bin)
+			if err == nil {
+				lb.Write(fmt.Sprintf("Found %s at %s", c.name, path))
+				if c.bin == "uv" {
+					return path, "uv pip"
+				}
+				return path, c.name
+			}
 		}
 	}
 
 	lb.Write("pip not found, trying get-pip.py fallback")
-	pipPath, err := installPipFallback(lb)
+	pipPath, err := installPipFallbackForDataDir(dataDir, lb)
 	if err != nil {
 		lb.Write(fmt.Sprintf("Fallback failed: %v", err))
 		return "", ""
@@ -901,10 +948,18 @@ func findPip(lb *RingBuffer) (string, string) {
 	return pipPath, "pip3"
 }
 
-func installPipFallback(lb *RingBuffer) (string, error) {
-	pythonPath, err := exec.LookPath("python3")
-	if err != nil {
-		return "", fmt.Errorf("python3 not found")
+func installPipFallbackForDataDir(dataDir string, lb *RingBuffer) (string, error) {
+	bundledPython := filepath.Join(dataDir, "python", "bin", "python3")
+	var pythonPath string
+	if _, err := os.Stat(bundledPython); err == nil {
+		pythonPath = bundledPython
+		lb.Write(fmt.Sprintf("Using bundled Python: %s", bundledPython))
+	} else {
+		path, err := exec.LookPath("python3")
+		if err != nil {
+			return "", fmt.Errorf("python3 not found")
+		}
+		pythonPath = path
 	}
 
 	resp, err := http.Get("https://bootstrap.pypa.io/get-pip.py")
@@ -1089,4 +1144,71 @@ func parsePositiveInt(s string) (int, error) {
 		return 0, fmt.Errorf("must be positive")
 	}
 	return n, nil
+}
+
+func ensureForgeVenv(dataDir, forgeDir string, lb *RingBuffer) {
+	venvDir := filepath.Join(forgeDir, "venv")
+	if _, err := os.Stat(filepath.Join(venvDir, "bin", "activate")); err == nil {
+		lb.Write("venv already exists, skipping")
+		return
+	}
+
+	pythonBin := filepath.Join(dataDir, "python", "bin", "python3")
+	if _, err := os.Stat(pythonBin); err != nil {
+		lb.Write(fmt.Sprintf("python3 not found at %s, skipping venv creation", pythonBin))
+		return
+	}
+
+	lb.Write("Creating venv for Forge...")
+	cmd := exec.Command(pythonBin, "-m", "venv", venvDir)
+	cmd.Dir = forgeDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("venv creation failed: %v: %s", err, string(output)))
+		return
+	}
+
+	pipBin := filepath.Join(venvDir, "bin", "pip")
+	lb.Write("Upgrading pip in venv...")
+	cmd = exec.Command(pipBin, "install", "--upgrade", "pip", "setuptools")
+	cmd.Dir = forgeDir
+	if _, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("pip upgrade warning: %v", err))
+	}
+
+	lb.Write("venv created successfully")
+}
+
+func createPythonSymlinks(pythonDir string, lb *RingBuffer) {
+	binDir := filepath.Join(pythonDir, "bin")
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, "python3.") && !entry.IsDir() {
+			linkName := strings.SplitN(name, ".", 2)[0] // python3.10 → python3
+			linkPath := filepath.Join(binDir, linkName)
+			if _, err := os.Lstat(linkPath); err == nil {
+				continue
+			}
+			if err := os.Symlink(name, linkPath); err != nil {
+				lb.Write(fmt.Sprintf("symlink %s → %s failed: %v", linkName, name, err))
+			} else {
+				lb.Write(fmt.Sprintf("symlink %s → %s", linkName, name))
+			}
+		}
+		if strings.HasPrefix(name, "pip3.") && !entry.IsDir() {
+			linkName := strings.SplitN(name, ".", 2)[0] // pip3.10 → pip3
+			linkPath := filepath.Join(binDir, linkName)
+			if _, err := os.Lstat(linkPath); err == nil {
+				continue
+			}
+			if err := os.Symlink(name, linkPath); err != nil {
+				lb.Write(fmt.Sprintf("symlink %s → %s failed: %v", linkName, name, err))
+			} else {
+				lb.Write(fmt.Sprintf("symlink %s → %s", linkName, name))
+			}
+		}
+	}
 }

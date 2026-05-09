@@ -1,0 +1,53 @@
+# SD Studio Server Configuration
+
+port: 8080
+mdns: true
+active_sd: forge
+
+# Processes — key "sd" is used by the server for SD backend management
+# Binary/args/workdir are filled from active backend at startup
+processes:
+  sd:
+    name: "Stable Diffusion"
+    # binary, args, workdir — filled from active backend at startup
+    health_url: "http://localhost:7860/sdapi/v1/options"
+    target_url: "http://localhost:7860"
+    proxy_path: "/api/sd/"
+    autostart: true
+    restart: true
+    max_restart: 5
+
+  ollama:
+    name: "Ollama"
+    binary: "ollama"
+    args: ["serve"]
+    health_url: "http://localhost:11434/api/tags"
+    target_url: "http://localhost:11434"
+    proxy_path: "/api/llm/"
+    autostart: true
+    restart: true
+    max_restart: 5
+
+  rembg:
+    name: "Rembg"
+    binary: "rembg"
+    args: ["s", "--host", "0.0.0.0", "--port", "7000"]
+    health_url: "http://localhost:7000/api"
+    target_url: "http://localhost:7000"
+    proxy_path: "/api/rembg/"
+    autostart: false
+    restart: true
+    max_restart: 3
+
+# SD Backend — Forge only
+backends:
+  forge:
+    name: "Stable Diffusion Forge"
+    process_key: "sd"
+    binary: "./stable-diffusion-webui-forge/webui.sh"
+    args: ["--listen", "--api", "--xformers"]
+    workdir: "./stable-diffusion-webui-forge"
+    models_dir: "./stable-diffusion-webui-forge/models/Stable-diffusion"
+    lora_dir: "./stable-diffusion-webui-forge/models/Lora"
+    vae_dir: "./stable-diffusion-webui-forge/models/VAE"
+    embedding_dir: "./stable-diffusion-webui-forge/embeddings"

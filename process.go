@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -141,6 +142,14 @@ func (pm *ProcessManager) start(name string) error {
 			pm.mu.Unlock()
 			log.Printf("[%s] auto-install failed: %v", name, err)
 			return fmt.Errorf("auto-install %q: %w", name, err)
+		}
+	}
+
+	// Resolve binary path for pip-installed tools (e.g. rembg → {DataDir}/python/bin/rembg)
+	if mp.Config.Binary != "" && !strings.ContainsRune(mp.Config.Binary, '/') {
+		resolved := findBinary(pm.installer.config.DataDir, mp.Config.Binary)
+		if resolved != "" {
+			mp.Config.Binary = resolved
 		}
 	}
 

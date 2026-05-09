@@ -111,7 +111,7 @@ var defaultConfig = Config{
 			AutoStart:  true,
 			Restart:    true,
 			MaxRestart: 5,
-			Env:        map[string]string{"PYTHON": "python/bin/python3"},
+			Env:        map[string]string{},
 		},
 		"ollama": {
 			Name:       "Ollama",
@@ -151,8 +151,8 @@ var defaultConfig = Config{
 		"forge": {
 			Name:         "Stable Diffusion Forge",
 			ProcessKey:   "sd",
-			Binary:       "stable-diffusion-webui-forge/webui.sh",
-			Args:         []string{"--listen", "--api", "--xformers"},
+			Binary:       "python/bin/python3",
+			Args:         []string{"launch.py", "--listen", "--api", "--xformers"},
 			WorkDir:      "stable-diffusion-webui-forge",
 			ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
 			LoraDir:      "stable-diffusion-webui-forge/models/Lora",
@@ -163,23 +163,6 @@ var defaultConfig = Config{
 				URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
 				Target:  "stable-diffusion-webui-forge",
 				Version: "main",
-			},
-		},
-		"a1111": {
-			Name:         "Stable Diffusion A1111",
-			ProcessKey:   "sd",
-			Binary:       "stable-diffusion-webui/webui.sh",
-			Args:         []string{"--listen", "--api", "--xformers"},
-			WorkDir:      "stable-diffusion-webui",
-			ModelsDir:    "stable-diffusion-webui/models/Stable-diffusion",
-			LoraDir:      "stable-diffusion-webui/models/Lora",
-			VaeDir:       "stable-diffusion-webui/models/VAE",
-			EmbeddingDir: "stable-diffusion-webui/embeddings",
-			Install: InstallConfig{
-				Method:  InstallZip,
-				URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
-				Target:  "stable-diffusion-webui",
-				Version: "master",
 			},
 		},
 	},
@@ -195,12 +178,6 @@ func init() {
 			URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
 			Target:  "stable-diffusion-webui-forge",
 			Version: "main",
-		},
-		"a1111": {
-			Method:  InstallZip,
-			URL:     "https://github.com/AUTOMATIC1111/stable-diffusion-webui/archive/refs/heads/master.zip",
-			Target:  "stable-diffusion-webui",
-			Version: "master",
 		},
 	}
 	installDefaultsProcesses = map[string]InstallConfig{
@@ -247,6 +224,40 @@ func Load(path string) (*Config, error) {
 
 	if cfg.DataDir == "" {
 		cfg.DataDir = defaultDataDir()
+	}
+
+	cfg.applyEnvOverrides()
+	cfg.applyBackendToProcess()
+	cfg.applyInstallDefaults()
+	cfg.resolvePaths()
+	return &cfg, nil
+}
+
+func LoadWithDir(path, dataDir string) (*Config, error) {
+	cfg := defaultConfig
+	cfg.DataDir = dataDir
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if writeErr := WriteTemplate(path); writeErr != nil {
+				return nil, fmt.Errorf("create default config: %w", writeErr)
+			}
+			cfg.applyEnvOverrides()
+			cfg.applyBackendToProcess()
+			cfg.applyInstallDefaults()
+			cfg.resolvePaths()
+			return &cfg, nil
+		}
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	if cfg.DataDir == "" {
+		cfg.DataDir = dataDir
 	}
 
 	cfg.applyEnvOverrides()
