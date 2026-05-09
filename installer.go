@@ -599,7 +599,7 @@ func extractBinaryFromTgz(tgzPath, binaryName, targetPath string, lb *RingBuffer
 		if err != nil {
 			return err
 		}
-		if filepath.Base(hdr.Name) == binaryName && hdr.Typeflag == tar.TypeReg {
+		if matchBinaryName(filepath.Base(hdr.Name), binaryName) && hdr.Typeflag == tar.TypeReg {
 			out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 			if err != nil {
 				return err
@@ -636,7 +636,7 @@ func extractBinaryFromTarZst(tarZstPath, binaryName, targetPath string, lb *Ring
 		if walkErr != nil || info.IsDir() {
 			return nil
 		}
-		if filepath.Base(path) == binaryName {
+		if matchBinaryName(filepath.Base(path), binaryName) {
 			found = path
 		}
 		return nil
@@ -652,6 +652,16 @@ func extractBinaryFromTarZst(tarZstPath, binaryName, targetPath string, lb *Ring
 	return nil
 }
 
+func matchBinaryName(name, target string) bool {
+	if name == target {
+		return true
+	}
+	if runtime.GOOS == "windows" && name == target+".exe" {
+		return true
+	}
+	return false
+}
+
 func extractBinaryFromZip(zipPath, binaryName, targetPath string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
@@ -660,7 +670,7 @@ func extractBinaryFromZip(zipPath, binaryName, targetPath string) error {
 	defer r.Close()
 
 	for _, f := range r.File {
-		if filepath.Base(f.Name) == binaryName && !f.FileInfo().IsDir() {
+		if matchBinaryName(filepath.Base(f.Name), binaryName) && !f.FileInfo().IsDir() {
 			rc, err := f.Open()
 			if err != nil {
 				return err

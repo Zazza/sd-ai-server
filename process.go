@@ -67,12 +67,13 @@ type ProcessStatus struct {
 }
 
 type ManagedProcess struct {
-	Config     ProcessConfig
-	Cmd        *exec.Cmd
-	PID        int
-	Status     string
-	StartedAt  time.Time
-	Restarts   int
+	Config      ProcessConfig
+	Cmd         *exec.Cmd
+	PID         int
+	Status      string
+	StartedAt   time.Time
+	Restarts    int
+	InstallFailed bool
 	cancelFunc context.CancelFunc
 	logBuf     *RingBuffer
 }
@@ -133,10 +134,11 @@ func (pm *ProcessManager) start(name string) error {
 	mp.Status = "starting"
 	pm.mu.Unlock()
 
-	if pm.installer != nil {
+	if pm.installer != nil && !mp.InstallFailed {
 		if err := pm.installer.EnsureInstalled(name, mp.Config.Binary); err != nil {
 			pm.mu.Lock()
 			mp.Status = "crashed"
+			mp.InstallFailed = true
 			mp.logBuf.Write(fmt.Sprintf("auto-install failed: %v", err))
 			pm.processes[name] = mp
 			pm.mu.Unlock()
