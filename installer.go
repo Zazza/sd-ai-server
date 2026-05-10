@@ -804,9 +804,8 @@ func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 		}
 		target := ic.Target
 		if runtime.GOOS == "windows" && !strings.HasSuffix(target, ".exe") {
-			if _, err := os.Stat(target + ".exe"); err == nil {
-				return true
-			}
+			_, err := os.Stat(target + ".exe")
+			return err == nil
 		}
 		_, err := os.Stat(target)
 		return err == nil
