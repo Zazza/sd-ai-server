@@ -486,6 +486,7 @@ func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) 
 
 	if key == "forge" {
 		ensureForgeVenv(inst.config.DataDir, ic.Target, lb)
+		preInstallForgeDeps(inst.config.DataDir, ic.Target, lb)
 	}
 
 	lb.Write("Installation complete")
@@ -1322,6 +1323,31 @@ func ensurePipAndSetuptools(pythonDir string, lb *RingBuffer) {
 	}
 }
 
+func preInstallForgeDeps(dataDir, forgeDir string, lb *RingBuffer) {
+	pythonExe := pythonBinPath(dataDir)
+	if _, err := os.Stat(pythonExe); err != nil {
+		lb.Write("python not found, skipping forge deps pre-install")
+		return
+	}
+
+	// Check if CLIP already installed
+	cmd := exec.Command(pythonExe, "-c", "import clip")
+	if err := cmd.Run(); err == nil {
+		lb.Write("CLIP already installed")
+		return
+	}
+
+	clipURL := "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip"
+	lb.Write("Pre-installing CLIP (no build isolation)...")
+	cmd = exec.Command(pythonExe, "-m", "pip", "install", clipURL, "--prefer-binary", "--no-build-isolation")
+	cmd.Dir = forgeDir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("CLIP install failed: %v: %s", err, string(output)))
+	} else {
+		lb.Write("CLIP installed successfully")
+	}
+}
+
 func (inst *Installer) EnsurePythonBasePackages() {
 	pythonDir := filepath.Join(inst.config.DataDir, "python")
 	pythonExe := pythonBinPath(inst.config.DataDir)
@@ -1333,6 +1359,18 @@ func (inst *Installer) EnsurePythonBasePackages() {
 	for _, line := range lb.Lines(50) {
 		if line != "" {
 			log.Printf("[python] %s", line)
+		}
+	}
+
+	// Pre-install CLIP if Forge exists but CLIP is missing
+	forgeDir := filepath.Join(inst.config.DataDir, "stable-diffusion-webui-forge")
+	if _, err := os.Stat(forgeDir); err == nil {
+		lb = NewRingBuffer(50)
+		preInstallForgeDeps(inst.config.DataDir, forgeDir, lb)
+		for _, line := range lb.Lines(50) {
+			if line != "" {
+				log.Printf("[forge-deps] %s", line)
+			}
 		}
 	}
 }
