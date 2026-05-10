@@ -481,6 +481,7 @@ func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) 
 
 	if key == "python" {
 		createPythonSymlinks(ic.Target, lb)
+		ensurePipAndSetuptools(ic.Target, lb)
 	}
 
 	if key == "forge" {
@@ -1285,5 +1286,31 @@ func createPythonSymlinks(pythonDir string, lb *RingBuffer) {
 				lb.Write(fmt.Sprintf("symlink %s → %s", linkName, name))
 			}
 		}
+	}
+}
+
+func ensurePipAndSetuptools(pythonDir string, lb *RingBuffer) {
+	pythonExe := filepath.Join(pythonDir, "bin", "python3")
+	if runtime.GOOS == "windows" {
+		pythonExe = filepath.Join(pythonDir, "python.exe")
+	}
+	if _, err := os.Stat(pythonExe); err != nil {
+		lb.Write(fmt.Sprintf("python not found at %s, skipping pip/setuptools setup", pythonExe))
+		return
+	}
+
+	lb.Write("Installing pip and setuptools...")
+	cmd := exec.Command(pythonExe, "-m", "ensurepip", "--upgrade")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("ensurepip failed: %v: %s", err, string(output)))
+	} else {
+		lb.Write("pip installed via ensurepip")
+	}
+
+	cmd = exec.Command(pythonExe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("pip/setuptools upgrade warning: %v: %s", err, string(output)))
+	} else {
+		lb.Write("pip, setuptools, wheel upgraded")
 	}
 }
