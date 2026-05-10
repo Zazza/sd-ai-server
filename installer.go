@@ -805,10 +805,38 @@ func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 	return false
 }
 
+func pythonBinPath(dataDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dataDir, "python", "python.exe")
+	}
+	return filepath.Join(dataDir, "python", "bin", "python3")
+}
+
+func pythonScriptsDir(dataDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dataDir, "python", "Scripts")
+	}
+	return filepath.Join(dataDir, "python", "bin")
+}
+
+func pipBinPath(dataDir, name string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(dataDir, "python", "Scripts", name+".exe")
+	}
+	return filepath.Join(dataDir, "python", "bin", name)
+}
+
 func findBinary(dataDir, name string) string {
-	bundled := filepath.Join(dataDir, "python", "bin", name)
-	if _, err := os.Stat(bundled); err == nil {
-		return bundled
+	if runtime.GOOS == "windows" {
+		bundled := filepath.Join(dataDir, "python", name+".exe")
+		if _, err := os.Stat(bundled); err == nil {
+			return bundled
+		}
+	} else {
+		bundled := filepath.Join(dataDir, "python", "bin", name)
+		if _, err := os.Stat(bundled); err == nil {
+			return bundled
+		}
 	}
 	path, err := exec.LookPath(name)
 	if err == nil {
@@ -924,15 +952,15 @@ func findPipForDataDir(dataDir string, lb *RingBuffer) (string, string) {
 		bin  string
 		name string
 	}{
-		{filepath.Join(dataDir, "python", "bin", "pip3"), "bundled pip3"},
-		{filepath.Join(dataDir, "python", "bin", "pip"), "bundled pip"},
+		{pipBinPath(dataDir, "pip3"), "bundled pip3"},
+		{pipBinPath(dataDir, "pip"), "bundled pip"},
 		{"pip3", "pip3"},
 		{"pip", "pip"},
 		{"uv", "uv pip"},
 	}
 
 	for _, c := range candidates {
-		if strings.ContainsRune(c.bin, '/') {
+		if strings.ContainsRune(c.bin, os.PathSeparator) {
 			if _, err := os.Stat(c.bin); err == nil {
 				lb.Write(fmt.Sprintf("Found %s at %s", c.name, c.bin))
 				return c.bin, c.name
@@ -959,7 +987,7 @@ func findPipForDataDir(dataDir string, lb *RingBuffer) (string, string) {
 }
 
 func installPipFallbackForDataDir(dataDir string, lb *RingBuffer) (string, error) {
-	bundledPython := filepath.Join(dataDir, "python", "bin", "python3")
+	bundledPython := pythonBinPath(dataDir)
 	var pythonPath string
 	if _, err := os.Stat(bundledPython); err == nil {
 		pythonPath = bundledPython
@@ -1156,16 +1184,24 @@ func parsePositiveInt(s string) (int, error) {
 	return n, nil
 }
 
+func venvScriptsDir(venvDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(venvDir, "Scripts")
+	}
+	return filepath.Join(venvDir, "bin")
+}
+
 func ensureForgeVenv(dataDir, forgeDir string, lb *RingBuffer) {
 	venvDir := filepath.Join(forgeDir, "venv")
-	if _, err := os.Stat(filepath.Join(venvDir, "bin", "activate")); err == nil {
+	activatePath := filepath.Join(venvScriptsDir(venvDir), "activate")
+	if _, err := os.Stat(activatePath); err == nil {
 		lb.Write("venv already exists, skipping")
 		return
 	}
 
-	pythonBin := filepath.Join(dataDir, "python", "bin", "python3")
+	pythonBin := pythonBinPath(dataDir)
 	if _, err := os.Stat(pythonBin); err != nil {
-		lb.Write(fmt.Sprintf("python3 not found at %s, skipping venv creation", pythonBin))
+		lb.Write(fmt.Sprintf("python not found at %s, skipping venv creation", pythonBin))
 		return
 	}
 
@@ -1177,7 +1213,10 @@ func ensureForgeVenv(dataDir, forgeDir string, lb *RingBuffer) {
 		return
 	}
 
-	pipBin := filepath.Join(venvDir, "bin", "pip")
+	pipBin := filepath.Join(venvScriptsDir(venvDir), "pip")
+	if runtime.GOOS == "windows" {
+		pipBin = filepath.Join(venvScriptsDir(venvDir), "pip.exe")
+	}
 	lb.Write("Upgrading pip in venv...")
 	cmd = exec.Command(pipBin, "install", "--upgrade", "pip", "setuptools")
 	cmd.Dir = forgeDir
@@ -1189,6 +1228,9 @@ func ensureForgeVenv(dataDir, forgeDir string, lb *RingBuffer) {
 }
 
 func createPythonSymlinks(pythonDir string, lb *RingBuffer) {
+	if runtime.GOOS == "windows" {
+		return
+	}
 	binDir := filepath.Join(pythonDir, "bin")
 	entries, err := os.ReadDir(binDir)
 	if err != nil {

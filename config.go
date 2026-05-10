@@ -73,6 +73,13 @@ func pythonArchiveURL() string {
 	return ""
 }
 
+func defaultForgeBinary() string {
+	if runtime.GOOS == "windows" {
+		return "python/python.exe"
+	}
+	return "python/bin/python3"
+}
+
 func ollamaArchiveURL() string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -151,7 +158,7 @@ var defaultConfig = Config{
 		"forge": {
 			Name:         "Stable Diffusion Forge",
 			ProcessKey:   "sd",
-			Binary:       "python/bin/python3",
+			Binary:       defaultForgeBinary(),
 			Args:         []string{"launch.py", "--listen", "--api", "--xformers"},
 			WorkDir:      "stable-diffusion-webui-forge",
 			ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
