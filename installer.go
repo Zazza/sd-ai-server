@@ -840,14 +840,25 @@ func pipBinPath(dataDir, name string) string {
 
 func findBinary(dataDir, name string) string {
 	if runtime.GOOS == "windows" {
-		bundled := filepath.Join(dataDir, "python", name+".exe")
-		if _, err := os.Stat(bundled); err == nil {
-			return bundled
+		for _, dir := range []string{
+			filepath.Join(dataDir, "python", "Scripts"),
+			filepath.Join(dataDir, "python"),
+			filepath.Join(dataDir, "bin"),
+		} {
+			candidate := filepath.Join(dir, name+".exe")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
 		}
 	} else {
-		bundled := filepath.Join(dataDir, "python", "bin", name)
-		if _, err := os.Stat(bundled); err == nil {
-			return bundled
+		for _, dir := range []string{
+			filepath.Join(dataDir, "python", "bin"),
+			filepath.Join(dataDir, "bin"),
+		} {
+			candidate := filepath.Join(dir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
 		}
 	}
 	path, err := exec.LookPath(name)
