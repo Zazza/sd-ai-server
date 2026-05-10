@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -100,8 +101,13 @@ func (hm *HealthMonitor) check(name, url string) {
 
 func (hm *HealthMonitor) setResult(name string, r HealthResult) {
 	hm.mu.Lock()
+	prev := hm.results[name]
 	hm.results[name] = r
 	hm.mu.Unlock()
+
+	if r.Healthy && !prev.Healthy {
+		log.Printf("[%s] healthy (latency: %dms)", name, r.LatencyMs)
+	}
 }
 
 func (hm *HealthMonitor) Results() map[string]HealthResult {

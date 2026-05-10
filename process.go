@@ -207,9 +207,14 @@ func (pm *ProcessManager) start(name string) error {
 	pm.processes[name] = mp
 	pm.mu.Unlock()
 
-	// Pipe stdout/stderr to ring buffer
-	go pipeLogs(stdout, mp.logBuf)
-	go pipeLogs(stderr, mp.logBuf)
+	log.Printf("[%s] started (pid=%d binary=%s workdir=%s)", name, mp.PID, mp.Config.Binary, mp.Config.WorkDir)
+	if mp.Config.HealthURL != "" {
+		log.Printf("[%s] waiting for healthy response from %s ...", name, mp.Config.HealthURL)
+	}
+
+	// Pipe stdout/stderr to ring buffer and server stdout
+	go pipeLogs(stdout, mp.logBuf, name)
+	go pipeLogs(stderr, mp.logBuf, name)
 
 	// Wait for process exit
 	go func() {
@@ -226,10 +231,12 @@ func (pm *ProcessManager) start(name string) error {
 	return nil
 }
 
-func pipeLogs(r io.Reader, buf *RingBuffer) {
+func pipeLogs(r io.Reader, buf *RingBuffer, name string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		buf.Write(scanner.Text())
+		line := scanner.Text()
+		buf.Write(line)
+		log.Printf("[%s] %s", name, line)
 	}
 }
 
