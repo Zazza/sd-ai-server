@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -148,10 +150,18 @@ func (pm *ProcessManager) start(name string) error {
 	}
 
 	// Resolve binary path for pip-installed tools (e.g. rembg → {DataDir}/python/bin/rembg)
-	if mp.Config.Binary != "" && !strings.ContainsRune(mp.Config.Binary, '/') {
+	if mp.Config.Binary != "" && !strings.ContainsRune(mp.Config.Binary, '/') && !strings.ContainsRune(mp.Config.Binary, os.PathSeparator) {
 		resolved := findBinary(pm.installer.config.DataDir, mp.Config.Binary)
 		if resolved != "" {
 			mp.Config.Binary = resolved
+		}
+	}
+
+	// On Windows, append .exe to absolute binary paths without extension
+	if runtime.GOOS == "windows" && mp.Config.Binary != "" && !strings.HasSuffix(mp.Config.Binary, ".exe") {
+		exePath := mp.Config.Binary + ".exe"
+		if _, err := os.Stat(exePath); err == nil {
+			mp.Config.Binary = exePath
 		}
 	}
 

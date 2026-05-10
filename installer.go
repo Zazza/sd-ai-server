@@ -397,6 +397,12 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 	}
 
 	binaryName := filepath.Base(ic.Target)
+	targetPath := ic.Target
+
+	if runtime.GOOS == "windows" && !strings.HasSuffix(binaryName, ".exe") {
+		binaryName += ".exe"
+		targetPath += ".exe"
+	}
 
 	inst.setProgress(key, "extracting")
 	lb.Write(fmt.Sprintf("Extracting %s from archive", binaryName))
@@ -404,11 +410,11 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 
 	switch {
 	case strings.HasSuffix(url, ".tgz") || strings.HasSuffix(url, ".tar.gz"):
-		err = extractBinaryFromTgz(tmpPath, binaryName, ic.Target, lb)
+		err = extractBinaryFromTgz(tmpPath, binaryName, targetPath, lb)
 	case strings.HasSuffix(url, ".tar.zst"):
-		err = extractBinaryFromTarZst(tmpPath, binaryName, ic.Target, lb)
+		err = extractBinaryFromTarZst(tmpPath, binaryName, targetPath, lb)
 	case strings.HasSuffix(url, ".zip"):
-		err = extractBinaryFromZip(tmpPath, binaryName, ic.Target)
+		err = extractBinaryFromZip(tmpPath, binaryName, targetPath)
 	default:
 		return fmt.Errorf("unsupported archive format: %s", url)
 	}
@@ -416,12 +422,12 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 		return fmt.Errorf("extract: %w", err)
 	}
 
-	if err := os.Chmod(ic.Target, 0755); err != nil {
+	if err := os.Chmod(targetPath, 0755); err != nil {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	lb.Write(fmt.Sprintf("Installed %s (%s)", ic.Target, formatBytes(size)))
-	log.Printf("[%s] installed %s (%s)", key, ic.Target, formatBytes(size))
+	lb.Write(fmt.Sprintf("Installed %s (%s)", targetPath, formatBytes(size)))
+	log.Printf("[%s] installed %s (%s)", key, targetPath, formatBytes(size))
 	return nil
 }
 
@@ -794,7 +800,13 @@ func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 		if ic.Target == "" {
 			return false
 		}
-		_, err := os.Stat(ic.Target)
+		target := ic.Target
+		if runtime.GOOS == "windows" && !strings.HasSuffix(target, ".exe") {
+			if _, err := os.Stat(target + ".exe"); err == nil {
+				return true
+			}
+		}
+		_, err := os.Stat(target)
 		return err == nil
 	case InstallPip:
 		if ic.Target == "" {
