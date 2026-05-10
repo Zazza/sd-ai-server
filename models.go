@@ -279,6 +279,8 @@ func (m *ModelManager) handleDownloadStream(w http.ResponseWriter, r *http.Reque
 	}
 
 	destPath := filepath.Join(dir, filename)
+	log.Printf("[download] %s -> %s (%s)", filename, dir, formatBytes(resp.ContentLength))
+
 	f, err := os.Create(destPath)
 	if err != nil {
 		fmt.Fprintf(w, "data: [ERROR] create file: %s\n\n", err.Error())
@@ -305,6 +307,7 @@ func (m *ModelManager) handleDownloadStream(w http.ResponseWriter, r *http.Reque
 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	flusher.Flush()
+	log.Printf("[download] complete: %s (%s)", filename, formatBytes(pw.written))
 }
 
 type sseProgressWriter struct {
@@ -313,6 +316,7 @@ type sseProgressWriter struct {
 	written     int64
 	lastWritten int64
 	lastTime    int64
+	lastLog     int64
 	writer      http.ResponseWriter
 	flusher     http.Flusher
 }
@@ -339,6 +343,15 @@ func (pw *sseProgressWriter) Write(p []byte) (int, error) {
 		})
 		fmt.Fprintf(pw.writer, "data: %s\n\n", payload)
 		pw.flusher.Flush()
+
+		if now-pw.lastLog >= 10000 || pw.written == pw.total {
+			pw.lastLog = now
+			pct := ""
+			if pw.total > 0 {
+				pct = fmt.Sprintf(" (%.0f%%)", percent)
+			}
+			log.Printf("[download] %s / %s%s", formatBytes(pw.written), formatBytes(pw.total), pct)
+		}
 	}
 	return n, nil
 }
