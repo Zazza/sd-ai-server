@@ -1299,8 +1299,15 @@ func ensurePipAndSetuptools(pythonDir string, lb *RingBuffer) {
 		return
 	}
 
+	// Check if setuptools is already installed
+	cmd := exec.Command(pythonExe, "-c", "import pkg_resources")
+	if err := cmd.Run(); err == nil {
+		lb.Write("setuptools already installed")
+		return
+	}
+
 	lb.Write("Installing pip and setuptools...")
-	cmd := exec.Command(pythonExe, "-m", "ensurepip", "--upgrade")
+	cmd = exec.Command(pythonExe, "-m", "ensurepip", "--upgrade")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		lb.Write(fmt.Sprintf("ensurepip failed: %v: %s", err, string(output)))
 	} else {
@@ -1312,5 +1319,20 @@ func ensurePipAndSetuptools(pythonDir string, lb *RingBuffer) {
 		lb.Write(fmt.Sprintf("pip/setuptools upgrade warning: %v: %s", err, string(output)))
 	} else {
 		lb.Write("pip, setuptools, wheel upgraded")
+	}
+}
+
+func (inst *Installer) EnsurePythonBasePackages() {
+	pythonDir := filepath.Join(inst.config.DataDir, "python")
+	pythonExe := pythonBinPath(inst.config.DataDir)
+	if _, err := os.Stat(pythonExe); err != nil {
+		return
+	}
+	lb := NewRingBuffer(50)
+	ensurePipAndSetuptools(pythonDir, lb)
+	for _, line := range lb.Lines(50) {
+		if line != "" {
+			log.Printf("[python] %s", line)
+		}
 	}
 }

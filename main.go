@@ -52,6 +52,7 @@ func main() {
 
 	// Initialize components
 	inst := NewInstaller(cfg)
+	inst.EnsurePythonBasePackages()
 	pm := NewProcessManager(cfg, inst)
 	proxy := NewProxyHandler(pm, cfg)
 	hm := NewHealthMonitor(cfg)
