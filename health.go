@@ -17,10 +17,11 @@ type HealthResult struct {
 }
 
 type HealthMonitor struct {
-	mu      sync.RWMutex
-	results map[string]HealthResult
-	config  *Config
-	client  *http.Client
+	mu       sync.RWMutex
+	results  map[string]HealthResult
+	config   *Config
+	client   *http.Client
+	OnUpdate func(map[string]HealthResult)
 }
 
 func NewHealthMonitor(cfg *Config) *HealthMonitor {
@@ -107,6 +108,10 @@ func (hm *HealthMonitor) setResult(name string, r HealthResult) {
 
 	if r.Healthy && !prev.Healthy {
 		log.Printf("[%s] healthy (latency: %dms)", name, r.LatencyMs)
+	}
+
+	if hm.OnUpdate != nil {
+		hm.OnUpdate(hm.Results())
 	}
 }
 

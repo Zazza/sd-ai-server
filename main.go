@@ -11,33 +11,35 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"golang.org/x/term"
+
+	"sd-studio-server/tui"
 )
 
 func main() {
 	dataDir := flag.String("data", "", "data directory (default: ~/sd-studio-server)")
 	configPath := flag.String("config", "", "config file path (default: {data-dir}/server-config.yaml)")
 	port := flag.Int("port", 0, "override server port")
+	headless := flag.Bool("headless", false, "run without TUI (log output only)")
 	flag.Parse()
 
-	// Resolve data dir first
 	dir := *dataDir
 	if dir == "" {
 		dir = defaultDataDir()
 	}
 	dir, _ = filepath.Abs(dir)
 
-	// Config path defaults to {data-dir}/server-config.yaml
 	cfgFile := *configPath
 	if cfgFile == "" {
 		cfgFile = filepath.Join(dir, "server-config.yaml")
 	}
 
-	// Ensure data directory exists
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", dir, err)
 	}
 
-	// Load config
 	cfg, err := LoadWithDir(cfgFile, dir)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -47,10 +49,20 @@ func main() {
 		cfg.Port = *port
 	}
 
+	isTerminal := term.IsTerminal(int(os.Stdin.Fd()))
+	useTUI := !*headless && isTerminal
+
+	if useTUI {
+		runTUI(cfg, cfgFile)
+	} else {
+		runHeadless(cfg)
+	}
+}
+
+func runHeadless(cfg *Config) {
 	log.Printf("SD Studio Server starting on port %d (backend: %s)", cfg.Port, cfg.ActiveSD)
 	log.Printf("Data directory: %s", cfg.DataDir)
 
-	// Initialize components
 	inst := NewInstaller(cfg)
 	inst.EnsurePythonBasePackages()
 	pm := NewProcessManager(cfg, inst)
@@ -61,58 +73,25 @@ func main() {
 	bm := NewBackendManager(cfg)
 	handlers := NewHandlers(pm, hm, gm, cfg, inst)
 
-	// Setup HTTP mux
-	mux := http.NewServeMux()
+	mux := setupMux(handlers, inst, mm, bm, proxy)
 
-	// Register routes
-	handlers.RegisterRoutes(mux)
-	mm.RegisterRoutes(mux)
-	mm.RegisterDeleteRoutes(mux)
-	bm.RegisterRoutes(mux)
-	inst.RegisterRoutes(mux)
-
-	// Proxy catches /api/sd/*, /api/llm/*, /api/rembg/*
-	mux.Handle("/api/sd/", proxy)
-	mux.Handle("/api/llm/", proxy)
-	mux.Handle("/api/rembg/", proxy)
-
-	// Root endpoint
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			writeJSON(w, map[string]interface{}{
-				"name":    "SD Studio Server",
-				"version": "1.0",
-				"status":  "running",
-			})
-			return
-		}
-		http.NotFound(w, r)
-	})
-
-	// Start context for background goroutines
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Install all components in dependency order (python → forge → ollama → rembg)
 	inst.EnsureAllInstalled()
-
-	// Start auto-start processes
 	pm.StartAll()
 
-	// Start background monitors
 	go pm.Watch(ctx)
 	go hm.Start(ctx)
 	go gm.Start(ctx)
 
-	// Setup HTTP server
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", cfg.Port),
 		Handler:      corsMiddleware(mux),
-		ReadTimeout:  0, // SD uploads can be large
-		WriteTimeout: 0, // SD generation can take minutes
+		ReadTimeout:  0,
+		WriteTimeout: 0,
 	}
 
-	// Start mDNS
 	mdns := NewMDNS(cfg.Port, cfg.MDNS)
 	if err := mdns.Register(); err != nil {
 		log.Printf("mDNS registration failed (non-fatal): %v", err)
@@ -120,7 +99,6 @@ func main() {
 		log.Printf("mDNS: registered _sd-studio._tcp on port %d", cfg.Port)
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -130,8 +108,7 @@ func main() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 
-		cancel() // stop background goroutines
-
+		cancel()
 		srv.Shutdown(shutdownCtx)
 		mdns.Shutdown()
 		pm.StopAll()
@@ -144,6 +121,196 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func runTUI(cfg *Config, cfgFile string) {
+	inst := NewInstaller(cfg)
+	inst.EnsurePythonBasePackages()
+	pm := NewProcessManager(cfg, inst)
+	proxy := NewProxyHandler(pm, cfg)
+	hm := NewHealthMonitor(cfg)
+	gm := NewGPUMonitor()
+	mm := NewModelManager(cfg)
+	bm := NewBackendManager(cfg)
+	handlers := NewHandlers(pm, hm, gm, cfg, inst)
+
+	mux := setupMux(handlers, inst, mm, bm, proxy)
+
+	_, configErr := os.Stat(cfgFile)
+	configExists := configErr == nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deps := tui.ServerDeps{
+		Port:         cfg.Port,
+		DataDir:      cfg.DataDir,
+		ConfigExists: configExists,
+		EnsureAllInstalled: func() {
+			inst.EnsureAllInstalled()
+		},
+		InstallStatus: func() map[string]tui.ComponentInstallStatus {
+			statuses := inst.Status()
+			result := make(map[string]tui.ComponentInstallStatus, len(statuses))
+			for k, s := range statuses {
+				result[k] = tui.ComponentInstallStatus{
+					Key:        s.Key,
+					Installed:  s.Installed,
+					Installing: s.Installing,
+					Progress:   s.Progress,
+					Error:      s.Error,
+				}
+			}
+			return result
+		},
+		StartAll: func() {
+			pm.StartAll()
+		},
+		StartMonitors: func() {
+			go pm.Watch(ctx)
+			go hm.Start(ctx)
+			go gm.Start(ctx)
+		},
+		ProcStatus: func() map[string]tui.ServiceInfo {
+			statuses := pm.Status()
+			healthResults := hm.Results()
+			result := make(map[string]tui.ServiceInfo, len(statuses))
+			for k, ps := range statuses {
+				si := tui.ServiceInfo{
+					Name:   ps.Name,
+					Status: ps.Status,
+					PID:    ps.PID,
+					Uptime: ps.Uptime,
+				}
+				if hr, ok := healthResults[k]; ok {
+					si.Healthy = hr.Healthy
+					si.Latency = hr.LatencyMs
+				}
+				result[k] = si
+			}
+			return result
+		},
+		StartProc: func(name string) error {
+			return pm.Start(name)
+		},
+		StopProc: func(name string) error {
+			return pm.Stop(name)
+		},
+		RestartProc: func(name string) error {
+			return pm.Restart(name)
+		},
+		ProcLogs: func(name string, lines int) []string {
+			logs, err := pm.Logs(name, lines)
+			if err != nil {
+				return nil
+			}
+			return logs
+		},
+		GPUInfo: func() tui.GPUInfo {
+			info := gm.Info()
+			return tui.GPUInfo{
+				Name:        info.Name,
+				MemoryTotal: info.MemoryTotal,
+				MemoryUsed:  info.MemoryUsed,
+				Utilization: info.Utilization,
+				Available:   info.Available,
+			}
+		},
+		HealthResults: func() map[string]tui.HealthResult {
+			results := hm.Results()
+			out := make(map[string]tui.HealthResult, len(results))
+			for k, v := range results {
+				out[k] = tui.HealthResult{
+					Healthy:   v.Healthy,
+					LatencyMs: v.LatencyMs,
+					Error:     v.Error,
+				}
+			}
+			return out
+		},
+	}
+
+	model := tui.NewAppModel(deps)
+	p := tea.NewProgram(model, tea.WithAltScreen())
+
+	inst.OnProgress = func(key, progress string) {
+		p.Send(tui.InstallProgressMsg(key, progress))
+	}
+
+	pm.OnChange = func() {
+		p.Send(tui.ServicesChangeMsg{})
+	}
+
+	gm.OnUpdate = func(info GPUInfo) {
+		p.Send(tui.GPUUpdateMsgFunc(tui.GPUInfo{
+			Name:        info.Name,
+			MemoryTotal: info.MemoryTotal,
+			MemoryUsed:  info.MemoryUsed,
+			Utilization: info.Utilization,
+			Available:   info.Available,
+		}))
+	}
+
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      corsMiddleware(mux),
+		ReadTimeout:  0,
+		WriteTimeout: 0,
+	}
+
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+		srv.Shutdown(shutdownCtx)
+		pm.StopAll()
+	}()
+
+	mdns := NewMDNS(cfg.Port, cfg.MDNS)
+	if err := mdns.Register(); err != nil {
+		log.Printf("mDNS registration failed (non-fatal): %v", err)
+	}
+
+	if _, err := p.Run(); err != nil {
+		log.Fatalf("TUI error: %v", err)
+	}
+
+	cancel()
+	pm.StopAll()
+	mdns.Shutdown()
+}
+
+func setupMux(handlers *Handlers, inst *Installer, mm *ModelManager, bm *BackendManager, proxy *ProxyHandler) *http.ServeMux {
+	mux := http.NewServeMux()
+	handlers.RegisterRoutes(mux)
+	mm.RegisterRoutes(mux)
+	mm.RegisterDeleteRoutes(mux)
+	bm.RegisterRoutes(mux)
+	inst.RegisterRoutes(mux)
+
+	mux.Handle("/api/sd/", proxy)
+	mux.Handle("/api/llm/", proxy)
+	mux.Handle("/api/rembg/", proxy)
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			writeJSON(w, map[string]interface{}{
+				"name":    "SD Studio Server",
+				"version": "1.0",
+				"status":  "running",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	return mux
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

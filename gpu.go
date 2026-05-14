@@ -21,9 +21,10 @@ type GPUInfo struct {
 }
 
 type GPUMonitor struct {
-	mu     sync.RWMutex
-	info   GPUInfo
-	binary string
+	mu       sync.RWMutex
+	info     GPUInfo
+	binary   string
+	OnUpdate func(GPUInfo)
 }
 
 func NewGPUMonitor() *GPUMonitor {
@@ -101,6 +102,10 @@ func (gm *GPUMonitor) poll() {
 	gm.mu.Lock()
 	gm.info = info
 	gm.mu.Unlock()
+
+	if gm.OnUpdate != nil {
+		gm.OnUpdate(info)
+	}
 }
 
 func (gm *GPUMonitor) Info() GPUInfo {

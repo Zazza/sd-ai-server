@@ -84,6 +84,7 @@ type ProcessManager struct {
 	mu        sync.RWMutex
 	processes map[string]*ManagedProcess
 	installer *Installer
+	OnChange  func()
 }
 
 func NewProcessManager(cfg *Config, inst *Installer) *ProcessManager {
@@ -211,6 +212,7 @@ func (pm *ProcessManager) start(name string) error {
 	if mp.Config.HealthURL != "" {
 		log.Printf("[%s] waiting for healthy response from %s ...", name, mp.Config.HealthURL)
 	}
+	pm.notifyChange()
 
 	// Pipe stdout/stderr to ring buffer and server stdout
 	go pipeLogs(stdout, mp.logBuf, name)
@@ -226,6 +228,7 @@ func (pm *ProcessManager) start(name string) error {
 		}
 		pm.processes[name] = mp
 		pm.mu.Unlock()
+		pm.notifyChange()
 	}()
 
 	return nil
@@ -253,7 +256,9 @@ func (pm *ProcessManager) Stop(name string) error {
 	}
 	pm.mu.Unlock()
 
-	return platformKill(mp)
+	err := platformKill(mp)
+	pm.notifyChange()
+	return err
 }
 
 func (pm *ProcessManager) Restart(name string) error {
@@ -328,6 +333,7 @@ func (pm *ProcessManager) Watch(ctx context.Context) {
 						pm.processes[n] = m
 						pm.mu.Unlock()
 						pm.start(n)
+						pm.notifyChange()
 					}(name, mp)
 				}
 			}
@@ -373,4 +379,10 @@ func envSlice(env map[string]string) []string {
 		result = append(result, k+"="+v)
 	}
 	return result
+}
+
+func (pm *ProcessManager) notifyChange() {
+	if pm.OnChange != nil {
+		pm.OnChange()
+	}
 }

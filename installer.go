@@ -36,10 +36,11 @@ type InstallStatus struct {
 }
 
 type Installer struct {
-	config   *Config
-	mu       sync.RWMutex
-	statuses map[string]*InstallStatus
-	logs     map[string]*RingBuffer
+	config     *Config
+	mu         sync.RWMutex
+	statuses   map[string]*InstallStatus
+	logs       map[string]*RingBuffer
+	OnProgress func(key, progress string)
 }
 
 func NewInstaller(cfg *Config) *Installer {
@@ -200,6 +201,10 @@ func (inst *Installer) Install(key string) error {
 	}
 	inst.statuses[key] = s
 	inst.mu.Unlock()
+
+	if inst.OnProgress != nil {
+		inst.OnProgress(key, s.Progress)
+	}
 
 	return err
 }
@@ -876,6 +881,9 @@ func (inst *Installer) setProgress(key string, progress string) {
 		inst.statuses[key] = s
 	}
 	inst.mu.Unlock()
+	if inst.OnProgress != nil {
+		inst.OnProgress(key, progress)
+	}
 }
 
 func (inst *Installer) handleAllStatus(w http.ResponseWriter, r *http.Request) {
