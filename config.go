@@ -100,79 +100,81 @@ func defaultDataDir() string {
 	return filepath.Join(home, "sd-studio-server")
 }
 
-var defaultConfig = Config{
-	Port:     8080,
-	MDNS:     true,
-	DataDir:  "",
-	ActiveSD: "forge",
-	Processes: map[string]ProcessConfig{
-		"python": {
-			Name:      "Python 3.10",
-			AutoStart: false,
-		},
-		"sd": {
-			Name:       "Stable Diffusion",
-			HealthURL:  "http://localhost:7860/sdapi/v1/options",
-			TargetURL:  "http://localhost:7860",
-			ProxyPath:  "/api/sd/",
-			AutoStart:  true,
-			Restart:    true,
-			MaxRestart: 5,
-			Env:        map[string]string{},
-		},
-		"ollama": {
-			Name:       "Ollama",
-			Binary:     "bin/ollama",
-			Args:       []string{"serve"},
-			Env:        map[string]string{"OLLAMA_MODELS": "models/ollama"},
-			HealthURL:  "http://localhost:11434/api/tags",
-			TargetURL:  "http://localhost:11434",
-			ProxyPath:  "/api/llm/",
-			AutoStart:  true,
-			Restart:    true,
-			MaxRestart: 5,
-			Install: InstallConfig{
-				Method: InstallArchive,
-				URL:    ollamaArchiveURL(),
-				Target: "bin/ollama",
+func newDefaultConfig() Config {
+	return Config{
+		Port:     8080,
+		MDNS:     true,
+		DataDir:  "",
+		ActiveSD: "forge",
+		Processes: map[string]ProcessConfig{
+			"python": {
+				Name:      "Python 3.10",
+				AutoStart: false,
+			},
+			"sd": {
+				Name:       "Stable Diffusion",
+				HealthURL:  "http://localhost:7860/sdapi/v1/options",
+				TargetURL:  "http://localhost:7860",
+				ProxyPath:  "/api/sd/",
+				AutoStart:  true,
+				Restart:    true,
+				MaxRestart: 5,
+				Env:        map[string]string{},
+			},
+			"ollama": {
+				Name:       "Ollama",
+				Binary:     "bin/ollama",
+				Args:       []string{"serve"},
+				Env:        map[string]string{"OLLAMA_MODELS": "models/ollama"},
+				HealthURL:  "http://localhost:11434/api/tags",
+				TargetURL:  "http://localhost:11434",
+				ProxyPath:  "/api/llm/",
+				AutoStart:  true,
+				Restart:    true,
+				MaxRestart: 5,
+				Install: InstallConfig{
+					Method: InstallArchive,
+					URL:    ollamaArchiveURL(),
+					Target: "bin/ollama",
+				},
+			},
+			"rembg": {
+				Name:       "Rembg",
+				Binary:     "rembg",
+				Args:       []string{"s", "--host", "0.0.0.0", "--port", "7000"},
+				HealthURL:  "http://localhost:7000/api",
+				TargetURL:  "http://localhost:7000",
+				ProxyPath:  "/api/rembg/",
+				AutoStart:  false,
+				Restart:    true,
+				MaxRestart: 3,
+				Install: InstallConfig{
+					Method: InstallPip,
+					URL:    "rembg",
+					Target: "rembg",
+				},
 			},
 		},
-		"rembg": {
-			Name:       "Rembg",
-			Binary:     "rembg",
-			Args:       []string{"s", "--host", "0.0.0.0", "--port", "7000"},
-			HealthURL:  "http://localhost:7000/api",
-			TargetURL:  "http://localhost:7000",
-			ProxyPath:  "/api/rembg/",
-			AutoStart:  false,
-			Restart:    true,
-			MaxRestart: 3,
-			Install: InstallConfig{
-				Method: InstallPip,
-				URL:    "rembg",
-				Target: "rembg",
+		Backends: map[string]BackendConfig{
+			"forge": {
+				Name:         "Stable Diffusion Forge",
+				ProcessKey:   "sd",
+				Binary:       defaultForgeBinary(),
+				Args:         []string{"launch.py", "--listen", "--api", "--xformers"},
+				WorkDir:      "stable-diffusion-webui-forge",
+				ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
+				LoraDir:      "stable-diffusion-webui-forge/models/Lora",
+				VaeDir:       "stable-diffusion-webui-forge/models/VAE",
+				EmbeddingDir: "stable-diffusion-webui-forge/embeddings",
+				Install: InstallConfig{
+					Method:  InstallZip,
+					URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
+					Target:  "stable-diffusion-webui-forge",
+					Version: "main",
+				},
 			},
 		},
-	},
-	Backends: map[string]BackendConfig{
-		"forge": {
-			Name:         "Stable Diffusion Forge",
-			ProcessKey:   "sd",
-			Binary:       defaultForgeBinary(),
-			Args:         []string{"launch.py", "--listen", "--api", "--xformers"},
-			WorkDir:      "stable-diffusion-webui-forge",
-			ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
-			LoraDir:      "stable-diffusion-webui-forge/models/Lora",
-			VaeDir:       "stable-diffusion-webui-forge/models/VAE",
-			EmbeddingDir: "stable-diffusion-webui-forge/embeddings",
-			Install: InstallConfig{
-				Method:  InstallZip,
-				URL:     "https://github.com/lllyasviel/stable-diffusion-webui-forge/archive/refs/heads/main.zip",
-				Target:  "stable-diffusion-webui-forge",
-				Version: "main",
-			},
-		},
-	},
+	}
 }
 
 var installDefaultsBackends map[string]InstallConfig
@@ -207,7 +209,7 @@ func init() {
 }
 
 func Load(path string) (*Config, error) {
-	cfg := defaultConfig
+	cfg := newDefaultConfig()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -241,7 +243,7 @@ func Load(path string) (*Config, error) {
 }
 
 func LoadWithDir(path, dataDir string) (*Config, error) {
-	cfg := defaultConfig
+	cfg := newDefaultConfig()
 	cfg.DataDir = dataDir
 
 	data, err := os.ReadFile(path)
@@ -376,7 +378,7 @@ func (c *Config) GetActiveBackend() *BackendConfig {
 }
 
 func WriteTemplate(path string) error {
-	cfg := defaultConfig
+	cfg := newDefaultConfig()
 	cfg.DataDir = defaultDataDir()
 	data, err := yaml.Marshal(&cfg)
 	if err != nil {

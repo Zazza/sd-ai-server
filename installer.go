@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -282,6 +283,11 @@ func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) 
 
 	if err := extractZip(tmpPath, ic.Target); err != nil {
 		return fmt.Errorf("extract: %w", err)
+	}
+
+	if key == "forge" {
+		ensureForgeVenv(inst.config.DataDir, ic.Target, lb)
+		preInstallForgeDeps(inst.config.DataDir, ic.Target, lb)
 	}
 
 	lb.Write("Installation complete")
@@ -1250,7 +1256,7 @@ func ensureForgeVenv(dataDir, forgeDir string, lb *RingBuffer) {
 		pipBin = filepath.Join(venvScriptsDir(venvDir), "pip.exe")
 	}
 	lb.Write("Upgrading pip in venv...")
-	cmd = exec.Command(pipBin, "install", "--upgrade", "pip", "setuptools")
+	cmd = exec.Command(pipBin, "install", "--upgrade", "pip", "setuptools<78")
 	cmd.Dir = forgeDir
 	if _, err := cmd.CombinedOutput(); err != nil {
 		lb.Write(fmt.Sprintf("pip upgrade warning: %v", err))
@@ -1322,11 +1328,44 @@ func ensurePipAndSetuptools(pythonDir string, lb *RingBuffer) {
 		lb.Write("pip installed via ensurepip")
 	}
 
-	cmd = exec.Command(pythonExe, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+	cmd = exec.Command(pythonExe, "-m", "pip", "install", "--upgrade", "pip", "setuptools<78", "wheel")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		lb.Write(fmt.Sprintf("pip/setuptools upgrade warning: %v: %s", err, string(output)))
 	} else {
 		lb.Write("pip, setuptools, wheel upgraded")
+	}
+}
+
+func detectTorchIndex() (label, indexURL string) {
+	nvidiaSmi := "nvidia-smi"
+	if runtime.GOOS == "windows" {
+		if p := os.Getenv("ProgramFiles"); p != "" {
+			candidate := p + `\NVIDIA Corporation\NVSMI\nvidia-smi.exe`
+			if _, err := os.Stat(candidate); err == nil {
+				nvidiaSmi = candidate
+			}
+		}
+	}
+
+	output, err := exec.Command(nvidiaSmi, "--query-gpu=compute_cap", "--format=csv,noheader,nounits").Output()
+	if err != nil {
+		return "CPU", ""
+	}
+
+	capStr := strings.TrimSpace(string(output))
+	capStr = strings.SplitN(capStr, "\n", 2)[0]
+	capStr = strings.TrimSpace(capStr)
+	major, _ := strconv.Atoi(strings.SplitN(capStr, ".", 2)[0])
+
+	switch {
+	case major >= 8:
+		return "CUDA 12.4", "https://download.pytorch.org/whl/cu124"
+	case major >= 7:
+		return "CUDA 12.1", "https://download.pytorch.org/whl/cu121"
+	case major >= 6:
+		return "CUDA 11.8", "https://download.pytorch.org/whl/cu118"
+	default:
+		return "CPU", ""
 	}
 }
 
@@ -1337,11 +1376,34 @@ func preInstallForgeDeps(dataDir, forgeDir string, lb *RingBuffer) {
 		return
 	}
 
-	// Check if CLIP already installed
-	cmd := exec.Command(pythonExe, "-c", "import clip")
+	cmd := exec.Command(pythonExe, "-c", "import torch; assert torch.cuda.is_available()")
+	if err := cmd.Run(); err != nil {
+		label, indexURL := detectTorchIndex()
+		args := []string{"-m", "pip", "install", "torch", "torchvision", "torchaudio"}
+		if indexURL != "" {
+			args = append(args, "--index-url", indexURL)
+		}
+		lb.Write(fmt.Sprintf("Installing PyTorch (%s)...", label))
+		cmd = exec.Command(pythonExe, args...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			lb.Write(fmt.Sprintf("PyTorch install failed: %v: %s", err, string(output)))
+		} else {
+			lb.Write("PyTorch installed successfully")
+		}
+	} else {
+		lb.Write("PyTorch CUDA already available")
+	}
+
+	cmd = exec.Command(pythonExe, "-c", "import clip")
 	if err := cmd.Run(); err == nil {
 		lb.Write("CLIP already installed")
 		return
+	}
+
+	lb.Write("Ensuring setuptools<78 for CLIP build...")
+	cmd = exec.Command(pythonExe, "-m", "pip", "install", "setuptools<78", "--quiet")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		lb.Write(fmt.Sprintf("setuptools pin warning: %v: %s", err, string(output)))
 	}
 
 	clipURL := "https://github.com/openai/CLIP/archive/d50d76daa670286dd6cacf3bcd80b5e4823fc8e1.zip"
@@ -1352,6 +1414,20 @@ func preInstallForgeDeps(dataDir, forgeDir string, lb *RingBuffer) {
 		lb.Write(fmt.Sprintf("CLIP install failed: %v: %s", err, string(output)))
 	} else {
 		lb.Write("CLIP installed successfully")
+	}
+}
+
+func (inst *Installer) PreStartForge() {
+	forgeDir := filepath.Join(inst.config.DataDir, "stable-diffusion-webui-forge")
+	if _, err := os.Stat(forgeDir); err != nil {
+		return
+	}
+	lb := NewRingBuffer(50)
+	preInstallForgeDeps(inst.config.DataDir, forgeDir, lb)
+	for _, line := range lb.Lines(50) {
+		if line != "" {
+			log.Printf("[forge-prestart] %s", line)
+		}
 	}
 }
 

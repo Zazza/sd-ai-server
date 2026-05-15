@@ -14,6 +14,11 @@ type WizardDoneMsg struct {
 	DataDir string
 }
 
+type WizardResult struct {
+	DataDir    string
+	Components map[string]bool
+}
+
 type Component struct {
 	Key    string
 	Label  string
@@ -172,4 +177,62 @@ func (m WizardModel) View() string {
 	b.WriteString(helpStyle.Render("↑/↓ navigate  •  Space toggle  •  Enter confirm  •  Ctrl+C quit"))
 
 	return borderStyle.Render(b.String())
+}
+
+func (m WizardModel) ActiveComponents() map[string]bool {
+	result := make(map[string]bool, len(m.components))
+	for _, c := range m.components {
+		result[c.Key] = c.Active
+	}
+	return result
+}
+
+type wizardRunner struct {
+	wizard WizardModel
+	result WizardResult
+	done   bool
+}
+
+func (m *wizardRunner) Init() tea.Cmd {
+	return m.wizard.Init()
+}
+
+func (m *wizardRunner) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case WizardDoneMsg:
+		m.result = WizardResult{
+			DataDir:    msg.DataDir,
+			Components: m.wizard.ActiveComponents(),
+		}
+		m.done = true
+		return m, tea.Quit
+	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			m.done = true
+			return m, tea.Quit
+		}
+	}
+	w, cmd := m.wizard.Update(msg)
+	m.wizard = w.(WizardModel)
+	return m, cmd
+}
+
+func (m *wizardRunner) View() string {
+	if m.done {
+		return ""
+	}
+	return m.wizard.View()
+}
+
+func RunWizard(defaultDir string) WizardResult {
+	runner := &wizardRunner{
+		wizard: NewWizardModel(defaultDir),
+	}
+	p := tea.NewProgram(runner, tea.WithAltScreen())
+	if final, err := p.Run(); err == nil {
+		if r, ok := final.(*wizardRunner); ok {
+			return r.result
+		}
+	}
+	return WizardResult{DataDir: defaultDir}
 }

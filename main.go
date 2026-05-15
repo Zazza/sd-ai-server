@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 
 	"sd-studio-server/tui"
 )
@@ -36,6 +37,9 @@ func main() {
 		cfgFile = filepath.Join(dir, "server-config.yaml")
 	}
 
+	_, configErr := os.Stat(cfgFile)
+	firstRun := configErr != nil
+
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory %s: %v", dir, err)
 	}
@@ -53,7 +57,7 @@ func main() {
 	useTUI := !*headless && isTerminal
 
 	if useTUI {
-		runTUI(cfg, cfgFile)
+		runTUI(cfg, cfgFile, firstRun)
 	} else {
 		runHeadless(cfg)
 	}
@@ -123,7 +127,44 @@ func runHeadless(cfg *Config) {
 	}
 }
 
-func runTUI(cfg *Config, cfgFile string) {
+func runTUI(cfg *Config, cfgFile string, firstRun bool) {
+	logCapture := NewLogCapture(300)
+	log.SetOutput(logCapture)
+
+	if firstRun {
+		result := tui.RunWizard(cfg.DataDir)
+		if result.DataDir == "" {
+			return
+		}
+
+		if err := os.MkdirAll(result.DataDir, 0755); err != nil {
+			log.Fatalf("Failed to create data directory: %v", err)
+		}
+
+		freshCfg := newDefaultConfig()
+		freshCfg.DataDir = result.DataDir
+
+		for key, active := range result.Components {
+			if !active {
+				if proc, ok := freshCfg.Processes[key]; ok {
+					proc.AutoStart = false
+					proc.Install = InstallConfig{}
+					freshCfg.Processes[key] = proc
+				}
+			}
+		}
+
+		freshCfg.applyBackendToProcess()
+		freshCfg.applyInstallDefaults()
+		freshCfg.resolvePaths()
+
+		if err := saveConfig(cfgFile, &freshCfg); err != nil {
+			log.Fatalf("Failed to save config: %v", err)
+		}
+
+		*cfg = freshCfg
+	}
+
 	inst := NewInstaller(cfg)
 	inst.EnsurePythonBasePackages()
 	pm := NewProcessManager(cfg, inst)
@@ -136,16 +177,12 @@ func runTUI(cfg *Config, cfgFile string) {
 
 	mux := setupMux(handlers, inst, mm, bm, proxy)
 
-	_, configErr := os.Stat(cfgFile)
-	configExists := configErr == nil
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	deps := tui.ServerDeps{
 		Port:         cfg.Port,
 		DataDir:      cfg.DataDir,
-		ConfigExists: configExists,
 		EnsureAllInstalled: func() {
 			inst.EnsureAllInstalled()
 		},
@@ -228,6 +265,9 @@ func runTUI(cfg *Config, cfgFile string) {
 			}
 			return out
 		},
+		ServerLogs: func() []string {
+				return logCapture.Lines(100)
+			},
 	}
 
 	model := tui.NewAppModel(deps)
@@ -284,6 +324,15 @@ func runTUI(cfg *Config, cfgFile string) {
 	cancel()
 	pm.StopAll()
 	mdns.Shutdown()
+}
+
+func saveConfig(path string, cfg *Config) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	header := []byte("# SD Studio Server Configuration\n\n")
+	return os.WriteFile(path, append(header, data...), 0644)
 }
 
 func setupMux(handlers *Handlers, inst *Installer, mm *ModelManager, bm *BackendManager, proxy *ProxyHandler) *http.ServeMux {

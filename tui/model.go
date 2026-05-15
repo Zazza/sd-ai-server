@@ -11,9 +11,8 @@ import (
 )
 
 type ServerDeps struct {
-	Port         int
-	DataDir      string
-	ConfigExists bool
+	Port    int
+	DataDir string
 
 	EnsureAllInstalled func()
 	InstallStatus      func() map[string]ComponentInstallStatus
@@ -28,6 +27,7 @@ type ServerDeps struct {
 
 	GPUInfo       func() GPUInfo
 	HealthResults func() map[string]HealthResult
+	ServerLogs    func() []string
 }
 
 type ComponentInstallStatus struct {
@@ -70,7 +70,6 @@ type AppModel struct {
 	height   int
 	ip       string
 
-	wizard    WizardModel
 	install   InstallModel
 	dashboard DashboardModel
 	quitting  bool
@@ -84,13 +83,7 @@ func NewAppModel(deps ServerDeps) AppModel {
 		ctx:    ctx,
 		cancel: cancel,
 		ip:     getLocalIP(),
-	}
-
-	if !deps.ConfigExists {
-		m.phase = PhaseWizard
-		m.wizard = NewWizardModel(deps.DataDir)
-	} else {
-		m.phase = PhaseInstall
+		phase:  PhaseInstall,
 	}
 
 	m.install = NewInstallModel(deps)
@@ -101,8 +94,6 @@ func NewAppModel(deps ServerDeps) AppModel {
 
 func (m AppModel) Init() tea.Cmd {
 	switch m.phase {
-	case PhaseWizard:
-		return m.wizard.Init()
 	case PhaseInstall:
 		return tea.Batch(m.install.Init(), SysStatsTick())
 	case PhaseDashboard:
@@ -128,11 +119,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
-	case WizardDoneMsg:
-		m.phase = PhaseInstall
-		m.install = NewInstallModel(m.deps)
-		return m, m.install.Init()
-
 	case InstallDoneMsg:
 		m.phase = PhaseDashboard
 		if m.deps.StartAll != nil {
@@ -153,10 +139,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	switch m.phase {
-	case PhaseWizard:
-		w, c := m.wizard.Update(msg)
-		m.wizard = w.(WizardModel)
-		cmd = c
 	case PhaseInstall:
 		i, c := m.install.Update(msg)
 		m.install = i.(InstallModel)
@@ -175,8 +157,6 @@ func (m AppModel) View() string {
 	}
 
 	switch m.phase {
-	case PhaseWizard:
-		return m.wizard.View()
 	case PhaseInstall:
 		return m.install.View()
 	case PhaseDashboard:

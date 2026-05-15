@@ -137,6 +137,10 @@ func (pm *ProcessManager) start(name string) error {
 	mp.Status = "starting"
 	pm.mu.Unlock()
 
+	if name == "sd" && pm.installer != nil {
+		pm.installer.PreStartForge()
+	}
+
 	if pm.installer != nil && !mp.InstallFailed {
 		if err := pm.installer.EnsureInstalled(name, mp.Config.Binary); err != nil {
 			pm.mu.Lock()
@@ -385,4 +389,25 @@ func (pm *ProcessManager) notifyChange() {
 	if pm.OnChange != nil {
 		pm.OnChange()
 	}
+}
+
+type LogCapture struct {
+	buf *RingBuffer
+}
+
+func NewLogCapture(size int) *LogCapture {
+	return &LogCapture{buf: NewRingBuffer(size)}
+}
+
+func (lc *LogCapture) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if line != "" {
+			lc.buf.Write(line)
+		}
+	}
+	return len(p), nil
+}
+
+func (lc *LogCapture) Lines(n int) []string {
+	return lc.buf.Lines(n)
 }

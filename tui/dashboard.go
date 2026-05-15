@@ -10,17 +10,19 @@ import (
 )
 
 type DashboardModel struct {
-	deps     ServerDeps
-	ip       string
-	width    int
-	height   int
-	cursor   int
-	sysStats SysStats
-	gpuInfo  GPUInfo
-	services map[string]ServiceInfo
-	showLogs bool
-	logKey   string
-	logLines []string
+	deps          ServerDeps
+	ip            string
+	width         int
+	height        int
+	cursor        int
+	sysStats      SysStats
+	gpuInfo       GPUInfo
+	services      map[string]ServiceInfo
+	showLogs      bool
+	logKey        string
+	logLines      []string
+	showTerminal  bool
+	terminalLines []string
 }
 
 func NewDashboardModel(deps ServerDeps, ip string) DashboardModel {
@@ -73,10 +75,25 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.showTerminal {
+			switch msg.String() {
+			case "t", "q", "esc":
+				m.showTerminal = false
+				return m, nil
+			}
+			return m, nil
+		}
+
 		keys := m.serviceKeys()
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
+		case "t":
+			m.showTerminal = true
+			if m.deps.ServerLogs != nil {
+				m.terminalLines = m.deps.ServerLogs()
+			}
+			return m, nil
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -150,6 +167,9 @@ func (m DashboardModel) serviceKeys() []string {
 }
 
 func (m DashboardModel) View() string {
+	if m.showTerminal {
+		return m.viewTerminal()
+	}
 	if m.showLogs {
 		return m.viewLogs()
 	}
@@ -179,6 +199,50 @@ func (m DashboardModel) viewLogs() string {
 	b.WriteString(helpStyle.Render("q/esc — back"))
 
 	return borderStyle.Render(b.String())
+}
+
+func (m DashboardModel) viewTerminal() string {
+	var b strings.Builder
+
+	header := titleStyle.Render(" Terminal ")
+	b.WriteString(header)
+	b.WriteString("\n")
+
+	b.WriteString(separator(m.width))
+	b.WriteString("\n")
+
+	maxLines := m.height - 6
+	if maxLines < 5 {
+		maxLines = 5
+	}
+
+	lines := m.terminalLines
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+
+	if len(lines) == 0 {
+		b.WriteString(helpStyle.Render("No output yet"))
+	} else {
+		for _, line := range lines {
+			if m.width > 4 && len(line) > m.width-4 {
+				line = line[:m.width-4]
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+
+	remaining := maxLines - len(lines)
+	for i := 0; i < remaining; i++ {
+		b.WriteString("\n")
+	}
+
+	b.WriteString(separator(m.width))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("[t] back to dashboard  [q] quit"))
+
+	return b.String()
 }
 
 func (m DashboardModel) viewDashboard() string {
@@ -232,7 +296,7 @@ func (m DashboardModel) viewDashboard() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [q] quit"))
+	b.WriteString(helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
 
 	return borderStyle.Render(b.String())
 }
