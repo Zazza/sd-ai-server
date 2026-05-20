@@ -119,6 +119,11 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 
+	case quitMsg:
+		m.quitting = true
+		m.cancel()
+		return m, tea.Quit
+
 	case InstallDoneMsg:
 		m.phase = PhaseDashboard
 		if m.deps.StartAll != nil {
@@ -128,6 +133,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.deps.StartMonitors()
 		}
 		m.dashboard = NewDashboardModel(m.deps, m.ip)
+		m.dashboard.width = m.width
+		m.dashboard.height = m.height
 		return m, tea.Batch(m.dashboard.Init(), SysStatsTick())
 
 	case tickMsg:

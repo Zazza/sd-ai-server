@@ -41,6 +41,8 @@ type sysStatsMsg struct {
 
 type ServicesChangeMsg struct{}
 
+type quitMsg struct{}
+
 type GPUUpdateMsg struct {
 	Info GPUInfo
 }

@@ -187,7 +187,7 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		keys := m.serviceKeys()
 		switch msg.String() {
 		case "q":
-			return m, tea.Quit
+			return m, func() tea.Msg { return quitMsg{} }
 		case "t":
 			m.showTerminal = true
 			m.termOffset = 0
@@ -274,11 +274,7 @@ func (m DashboardModel) serviceKeys() []string {
 }
 
 func (m DashboardModel) visibleLogLines() int {
-	v := m.height - 6
-	if v < 5 {
-		v = 5
-	}
-	return v
+	return m.height - 4
 }
 
 func (m DashboardModel) maxLogOffset() int {
@@ -291,11 +287,7 @@ func (m DashboardModel) maxLogOffset() int {
 }
 
 func (m DashboardModel) visibleTermLines() int {
-	v := m.height - 6
-	if v < 5 {
-		v = 5
-	}
-	return v
+	return m.height - 4
 }
 
 func (m DashboardModel) maxTermOffset() int {
@@ -318,44 +310,24 @@ func (m DashboardModel) View() string {
 }
 
 func (m DashboardModel) viewLogs() string {
-	var b strings.Builder
-
-	header := titleStyle.Render(fmt.Sprintf(" Logs: %s ", m.logKey))
-	b.WriteString(header)
-	b.WriteString("\n")
-
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-
-	maxWidth := m.width - 4
-	if maxWidth < 40 {
-		maxWidth = 40
+	w, h := m.width, m.height
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
 	}
 
-	visible := m.visibleLogLines()
+	var lines []string
 
-	if len(m.logLines) == 0 {
-		b.WriteString(helpStyle.Render("No logs available"))
-	} else {
-		offset := m.logOffset
-		if offset > m.maxLogOffset() {
-			offset = m.maxLogOffset()
-		}
+	lines = append(lines, titleStyle.Render(fmt.Sprintf(" Logs: %s ", m.logKey)))
+	lines = append(lines, separator(w))
 
-		end := offset + visible
-		if end > len(m.logLines) {
-			end = len(m.logLines)
-		}
+	visible := h - 4
+	contentArea := m.renderScrollArea(m.logLines, m.logOffset, visible, w)
+	lines = append(lines, contentArea...)
 
-		for i := offset; i < end; i++ {
-			line := m.logLines[i]
-			if maxWidth > 0 && len(line) > maxWidth {
-				line = line[:maxWidth]
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
+	lines = append(lines, separator(w))
 
 	total := len(m.logLines)
 	top := m.logOffset + 1
@@ -364,64 +336,35 @@ func (m DashboardModel) viewLogs() string {
 		bot = total
 	}
 	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
-
-	followTag := ""
+	footer := helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [q/esc] back")
+	footer += "  " + labelStyle.Render(scrollInfo)
 	if m.logFollowing {
-		followTag = progressGreen.Render("FOLLOW")
+		footer += "  " + progressGreen.Render("FOLLOW")
 	}
+	lines = append(lines, footer)
 
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [q/esc] back"))
-	b.WriteString("  ")
-	b.WriteString(labelStyle.Render(scrollInfo))
-	if followTag != "" {
-		b.WriteString("  ")
-		b.WriteString(followTag)
-	}
-
-	return borderStyle.Render(b.String())
+	return padLines(lines, w, h)
 }
 
 func (m DashboardModel) viewTerminal() string {
-	var b strings.Builder
-
-	header := titleStyle.Render(" Terminal ")
-	b.WriteString(header)
-	b.WriteString("\n")
-
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-
-	maxWidth := m.width - 4
-	if maxWidth < 40 {
-		maxWidth = 40
+	w, h := m.width, m.height
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
 	}
 
-	visible := m.visibleTermLines()
+	var lines []string
 
-	if len(m.terminalLines) == 0 {
-		b.WriteString(helpStyle.Render("No output yet"))
-	} else {
-		offset := m.termOffset
-		if offset > m.maxTermOffset() {
-			offset = m.maxTermOffset()
-		}
+	lines = append(lines, titleStyle.Render(" Terminal "))
+	lines = append(lines, separator(w))
 
-		end := offset + visible
-		if end > len(m.terminalLines) {
-			end = len(m.terminalLines)
-		}
+	visible := h - 4
+	contentArea := m.renderScrollArea(m.terminalLines, m.termOffset, visible, w)
+	lines = append(lines, contentArea...)
 
-		for i := offset; i < end; i++ {
-			line := m.terminalLines[i]
-			if maxWidth > 0 && len(line) > maxWidth {
-				line = line[:maxWidth]
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
+	lines = append(lines, separator(w))
 
 	total := len(m.terminalLines)
 	top := m.termOffset + 1
@@ -430,44 +373,68 @@ func (m DashboardModel) viewTerminal() string {
 		bot = total
 	}
 	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
-
-	followTag := ""
+	footer := helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [t/q/esc] back")
+	footer += "  " + labelStyle.Render(scrollInfo)
 	if m.termFollowing {
-		followTag = progressGreen.Render("FOLLOW")
+		footer += "  " + progressGreen.Render("FOLLOW")
+	}
+	lines = append(lines, footer)
+
+	return padLines(lines, w, h)
+}
+
+func (m DashboardModel) renderScrollArea(logLines []string, offset, visible, width int) []string {
+	result := make([]string, 0, visible)
+
+	if len(logLines) == 0 {
+		result = append(result, helpStyle.Render("No logs available"))
+		for len(result) < visible {
+			result = append(result, "")
+		}
+		return result
 	}
 
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [t/q/esc] back"))
-	b.WriteString("  ")
-	b.WriteString(labelStyle.Render(scrollInfo))
-	if followTag != "" {
-		b.WriteString("  ")
-		b.WriteString(followTag)
+	if offset > len(logLines)-visible {
+		offset = len(logLines) - visible
+	}
+	if offset < 0 {
+		offset = 0
 	}
 
-	return borderStyle.Render(b.String())
+	end := offset + visible
+	if end > len(logLines) {
+		end = len(logLines)
+	}
+
+	for i := offset; i < end; i++ {
+		result = append(result, truncateVisual(logLines[i], width))
+	}
+
+	for len(result) < visible {
+		result = append(result, "")
+	}
+
+	return result
 }
 
 func (m DashboardModel) viewDashboard() string {
-	var b strings.Builder
+	w, h := m.width, m.height
+	if w < 40 {
+		w = 40
+	}
+	if h < 10 {
+		h = 10
+	}
+
+	var lines []string
 
 	port := m.deps.Port
 	header := fmt.Sprintf(" SD Studio Server    %s  %s:%d ", runningStyle.Render("[RUNNING]"), m.ip, port)
-	b.WriteString(titleStyle.Render(header))
-	b.WriteString("\n")
-
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-
-	b.WriteString(m.renderMetrics())
-	b.WriteString("\n")
-
-	b.WriteString(separator(m.width))
-	b.WriteString("\n")
-
-	b.WriteString(subtitleStyle.Render("SERVICES"))
-	b.WriteString("\n")
+	lines = append(lines, titleStyle.Width(w).Render(header))
+	lines = append(lines, separator(w))
+	lines = append(lines, m.renderMetrics()...)
+	lines = append(lines, separator(w))
+	lines = append(lines, subtitleStyle.Render("SERVICES"))
 
 	keys := m.serviceKeys()
 	for i, key := range keys {
@@ -495,26 +462,28 @@ func (m DashboardModel) viewDashboard() string {
 		}
 
 		line := fmt.Sprintf("%s %s %-28s %s", cursor, statusIcon, si.Name, statusText)
-		b.WriteString(line)
-		b.WriteString("\n")
+		lines = append(lines, line)
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
+	for len(lines) < h-1 {
+		lines = append(lines, "")
+	}
 
-	return borderStyle.Render(b.String())
+	lines = append(lines, helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
+
+	return padLines(lines, w, h)
 }
 
-func (m DashboardModel) renderMetrics() string {
-	var b strings.Builder
+func (m DashboardModel) renderMetrics() []string {
+	var lines []string
 
 	cpuBar := renderBar(m.sysStats.CPUUsage, barWidth)
-	b.WriteString(fmt.Sprintf("  CPU  %s\n", cpuBar))
+	lines = append(lines, fmt.Sprintf("  CPU  %s", cpuBar))
 
 	ramUsed := formatMemMB(m.sysStats.RAMUsed)
 	ramTotal := formatMemMB(m.sysStats.RAMTotal)
 	ramBar := renderBar(m.sysStats.RAMUsage, barWidth)
-	b.WriteString(fmt.Sprintf("  RAM  %s  %s/%s\n", ramBar, ramUsed, ramTotal))
+	lines = append(lines, fmt.Sprintf("  RAM  %s  %s/%s", ramBar, ramUsed, ramTotal))
 
 	if m.gpuInfo.Available {
 		var vramPct float64
@@ -524,13 +493,13 @@ func (m DashboardModel) renderMetrics() string {
 		vramBar := renderBar(vramPct, barWidth)
 		vramUsed := fmt.Sprintf("%dMB", m.gpuInfo.MemoryUsed)
 		vramTotal := fmt.Sprintf("%dMB", m.gpuInfo.MemoryTotal)
-		b.WriteString(fmt.Sprintf("  VRAM %s  %s/%s\n", vramBar, vramUsed, vramTotal))
+		lines = append(lines, fmt.Sprintf("  VRAM %s  %s/%s", vramBar, vramUsed, vramTotal))
 
 		gpuBar := renderBar(float64(m.gpuInfo.Utilization), barWidth)
-		b.WriteString(fmt.Sprintf("  GPU  %s\n", gpuBar))
+		lines = append(lines, fmt.Sprintf("  GPU  %s", gpuBar))
 	}
 
-	return b.String()
+	return lines
 }
 
 func formatMemMB(bytes uint64) string {
@@ -543,8 +512,37 @@ func formatMemMB(bytes uint64) string {
 }
 
 func separator(width int) string {
-	if width <= 0 {
-		width = 60
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")).Render(strings.Repeat("─", width))
+}
+
+func padLines(lines []string, w, h int) string {
+	for len(lines) < h {
+		lines = append(lines, "")
 	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")).Render(strings.Repeat("-", width-4))
+	if len(lines) > h {
+		lines = lines[:h]
+	}
+	for i, l := range lines {
+		lines[i] = padRight(l, w)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func padRight(s string, width int) string {
+	visual := lipgloss.Width(s)
+	if visual >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-visual)
+}
+
+func truncateVisual(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes])
 }
