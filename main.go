@@ -83,6 +83,7 @@ func runHeadless(cfg *Config) {
 	defer cancel()
 
 	inst.EnsureAllInstalled()
+	ensureOllamaBinary(cfg, inst)
 	pm.StartAll()
 
 	go pm.Watch(ctx)
@@ -185,6 +186,7 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		DataDir:      cfg.DataDir,
 		EnsureAllInstalled: func() {
 			inst.EnsureAllInstalled()
+			ensureOllamaBinary(cfg, inst)
 		},
 		InstallStatus: func() map[string]tui.ComponentInstallStatus {
 			statuses := inst.Status()
@@ -373,4 +375,20 @@ func corsMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func ensureOllamaBinary(cfg *Config, inst *Installer) {
+	if ollamaPath := inst.EnsureOllama(); ollamaPath != "" {
+		pm := &ProcessConfig{}
+		for key, pc := range cfg.Processes {
+			if key == "ollama" {
+				pm = &pc
+				break
+			}
+		}
+		if pm != nil {
+			pm.Binary = ollamaPath
+			cfg.Processes["ollama"] = *pm
+		}
+	}
 }

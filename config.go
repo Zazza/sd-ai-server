@@ -80,18 +80,6 @@ func defaultForgeBinary() string {
 	return "python/bin/python3"
 }
 
-func ollamaArchiveURL() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return "https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-darwin.tgz"
-	case "linux":
-		return fmt.Sprintf("https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-linux-%s.tar.zst", runtime.GOARCH)
-	case "windows":
-		return fmt.Sprintf("https://github.com/ollama/ollama/releases/download/v0.23.1/ollama-windows-%s.zip", runtime.GOARCH)
-	}
-	return ""
-}
-
 func defaultDataDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -123,12 +111,14 @@ func newDefaultConfig() Config {
 			},
 			"ollama": {
 				Name:       "Ollama",
-				Binary:     "bin/ollama",
+				Binary:     "ollama",
 				Args:       []string{"serve"},
 				Env: map[string]string{
 					"OLLAMA_MODELS":       "models/ollama",
 					"OLLAMA_KEEP_ALIVE":   "24h",
-					"OLLAMA_NUM_PARALLEL": "1",
+					"OLLAMA_NUM_PARALLEL": "2",
+					"OLLAMA_NUM_GPU":      "-1",
+					"OLLAMA_DEBUG":        "1",
 				},
 				HealthURL:  "http://localhost:11434/api/tags",
 				TargetURL:  "http://localhost:11434",
@@ -137,9 +127,6 @@ func newDefaultConfig() Config {
 				Restart:    true,
 				MaxRestart: 5,
 				Install: InstallConfig{
-					Method: InstallArchive,
-					URL:    ollamaArchiveURL(),
-					Target: "bin/ollama",
 				},
 			},
 			"rembg": {
@@ -195,9 +182,6 @@ func init() {
 	}
 	installDefaultsProcesses = map[string]InstallConfig{
 		"ollama": {
-			Method: InstallArchive,
-			URL:    ollamaArchiveURL(),
-			Target: "bin/ollama",
 		},
 		"rembg": {
 			Method: InstallPip,
@@ -239,6 +223,7 @@ func Load(path string) (*Config, error) {
 		cfg.DataDir = defaultDataDir()
 	}
 
+	cfg.mergeProcessEnvDefaults()
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
 	cfg.applyInstallDefaults()
@@ -273,11 +258,31 @@ func LoadWithDir(path, dataDir string) (*Config, error) {
 		cfg.DataDir = dataDir
 	}
 
+	cfg.mergeProcessEnvDefaults()
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
 	cfg.applyInstallDefaults()
 	cfg.resolvePaths()
 	return &cfg, nil
+}
+
+func (c *Config) mergeProcessEnvDefaults() {
+	defaults := newDefaultConfig()
+	for key, defProc := range defaults.Processes {
+		curProc, ok := c.Processes[key]
+		if !ok {
+			continue
+		}
+		if curProc.Env == nil {
+			curProc.Env = make(map[string]string)
+		}
+		for k, v := range defProc.Env {
+			if _, exists := curProc.Env[k]; !exists {
+				curProc.Env[k] = v
+			}
+		}
+		c.Processes[key] = curProc
+	}
 }
 
 func (c *Config) resolvePaths() {

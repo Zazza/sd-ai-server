@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -21,8 +22,12 @@ type DashboardModel struct {
 	showLogs      bool
 	logKey        string
 	logLines      []string
+	logOffset     int
+	logFollowing  bool
 	showTerminal  bool
 	terminalLines []string
+	termOffset    int
+	termFollowing bool
 }
 
 func NewDashboardModel(deps ServerDeps, ip string) DashboardModel {
@@ -48,11 +53,38 @@ func (m DashboardModel) collectStats() tea.Cmd {
 	}
 }
 
+type logsTickMsg time.Time
+
+func logsTick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return logsTickMsg(t)
+	})
+}
+
 func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+	case logsTickMsg:
+		if m.showLogs {
+			m.refreshLogs(m.logKey)
+			if m.logFollowing {
+				m.logOffset = m.maxLogOffset()
+			}
+			return m, logsTick()
+		}
+		if m.showTerminal {
+			if m.deps.ServerLogs != nil {
+				m.terminalLines = m.deps.ServerLogs()
+			}
+			if m.termFollowing {
+				m.termOffset = m.maxTermOffset()
+			}
+			return m, logsTick()
+		}
+		return m, nil
 
 	case sysStatsMsg:
 		m.sysStats = SysStats{
@@ -70,7 +102,41 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "q", "esc":
 				m.showLogs = false
+				m.logOffset = 0
+				m.logFollowing = false
 				return m, nil
+			case "up", "k":
+				m.logFollowing = false
+				if m.logOffset > 0 {
+					m.logOffset--
+				}
+			case "down", "j":
+				if m.logOffset < m.maxLogOffset() {
+					m.logOffset++
+				}
+				if m.logOffset >= m.maxLogOffset() {
+					m.logFollowing = true
+				}
+			case "pgup":
+				m.logFollowing = false
+				m.logOffset -= m.visibleLogLines()
+				if m.logOffset < 0 {
+					m.logOffset = 0
+				}
+			case "pgdown":
+				m.logOffset += m.visibleLogLines()
+				if m.logOffset > m.maxLogOffset() {
+					m.logOffset = m.maxLogOffset()
+				}
+				if m.logOffset >= m.maxLogOffset() {
+					m.logFollowing = true
+				}
+			case "g":
+				m.logFollowing = false
+				m.logOffset = 0
+			case "G":
+				m.logFollowing = true
+				m.logOffset = m.maxLogOffset()
 			}
 			return m, nil
 		}
@@ -79,7 +145,41 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "t", "q", "esc":
 				m.showTerminal = false
+				m.termOffset = 0
+				m.termFollowing = false
 				return m, nil
+			case "up", "k":
+				m.termFollowing = false
+				if m.termOffset > 0 {
+					m.termOffset--
+				}
+			case "down", "j":
+				if m.termOffset < m.maxTermOffset() {
+					m.termOffset++
+				}
+				if m.termOffset >= m.maxTermOffset() {
+					m.termFollowing = true
+				}
+			case "pgup":
+				m.termFollowing = false
+				m.termOffset -= m.visibleTermLines()
+				if m.termOffset < 0 {
+					m.termOffset = 0
+				}
+			case "pgdown":
+				m.termOffset += m.visibleTermLines()
+				if m.termOffset > m.maxTermOffset() {
+					m.termOffset = m.maxTermOffset()
+				}
+				if m.termOffset >= m.maxTermOffset() {
+					m.termFollowing = true
+				}
+			case "g":
+				m.termFollowing = false
+				m.termOffset = 0
+			case "G":
+				m.termFollowing = true
+				m.termOffset = m.maxTermOffset()
 			}
 			return m, nil
 		}
@@ -90,10 +190,13 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "t":
 			m.showTerminal = true
+			m.termOffset = 0
+			m.termFollowing = true
 			if m.deps.ServerLogs != nil {
 				m.terminalLines = m.deps.ServerLogs()
 			}
-			return m, nil
+			m.termOffset = m.maxTermOffset()
+			return m, logsTick()
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -121,7 +224,11 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				name := keys[m.cursor]
 				m.showLogs = true
 				m.logKey = name
+				m.logOffset = 0
+				m.logFollowing = true
 				m.refreshLogs(name)
+				m.logOffset = m.maxLogOffset()
+				return m, logsTick()
 			}
 		}
 	}
@@ -154,7 +261,7 @@ func (m *DashboardModel) refreshGPU() {
 }
 
 func (m *DashboardModel) refreshLogs(name string) {
-	m.logLines = m.deps.ProcLogs(name, 30)
+	m.logLines = m.deps.ProcLogs(name, 200)
 }
 
 func (m DashboardModel) serviceKeys() []string {
@@ -164,6 +271,40 @@ func (m DashboardModel) serviceKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (m DashboardModel) visibleLogLines() int {
+	v := m.height - 6
+	if v < 5 {
+		v = 5
+	}
+	return v
+}
+
+func (m DashboardModel) maxLogOffset() int {
+	total := len(m.logLines)
+	visible := m.visibleLogLines()
+	if total <= visible {
+		return 0
+	}
+	return total - visible
+}
+
+func (m DashboardModel) visibleTermLines() int {
+	v := m.height - 6
+	if v < 5 {
+		v = 5
+	}
+	return v
+}
+
+func (m DashboardModel) maxTermOffset() int {
+	total := len(m.terminalLines)
+	visible := m.visibleTermLines()
+	if total <= visible {
+		return 0
+	}
+	return total - visible
 }
 
 func (m DashboardModel) View() string {
@@ -181,22 +322,63 @@ func (m DashboardModel) viewLogs() string {
 
 	header := titleStyle.Render(fmt.Sprintf(" Logs: %s ", m.logKey))
 	b.WriteString(header)
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	b.WriteString(separator(m.width))
+	b.WriteString("\n")
+
+	maxWidth := m.width - 4
+	if maxWidth < 40 {
+		maxWidth = 40
+	}
+
+	visible := m.visibleLogLines()
 
 	if len(m.logLines) == 0 {
 		b.WriteString(helpStyle.Render("No logs available"))
 	} else {
-		for _, line := range m.logLines {
-			if len(line) > 120 {
-				line = line[:120]
+		offset := m.logOffset
+		if offset > m.maxLogOffset() {
+			offset = m.maxLogOffset()
+		}
+
+		end := offset + visible
+		if end > len(m.logLines) {
+			end = len(m.logLines)
+		}
+
+		for i := offset; i < end; i++ {
+			line := m.logLines[i]
+			if maxWidth > 0 && len(line) > maxWidth {
+				line = line[:maxWidth]
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	}
 
+	total := len(m.logLines)
+	top := m.logOffset + 1
+	bot := m.logOffset + visible
+	if bot > total {
+		bot = total
+	}
+	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
+
+	followTag := ""
+	if m.logFollowing {
+		followTag = progressGreen.Render("FOLLOW")
+	}
+
+	b.WriteString(separator(m.width))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("q/esc — back"))
+	b.WriteString(helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [q/esc] back"))
+	b.WriteString("  ")
+	b.WriteString(labelStyle.Render(scrollInfo))
+	if followTag != "" {
+		b.WriteString("  ")
+		b.WriteString(followTag)
+	}
 
 	return borderStyle.Render(b.String())
 }
@@ -211,38 +393,60 @@ func (m DashboardModel) viewTerminal() string {
 	b.WriteString(separator(m.width))
 	b.WriteString("\n")
 
-	maxLines := m.height - 6
-	if maxLines < 5 {
-		maxLines = 5
+	maxWidth := m.width - 4
+	if maxWidth < 40 {
+		maxWidth = 40
 	}
 
-	lines := m.terminalLines
-	if len(lines) > maxLines {
-		lines = lines[len(lines)-maxLines:]
-	}
+	visible := m.visibleTermLines()
 
-	if len(lines) == 0 {
+	if len(m.terminalLines) == 0 {
 		b.WriteString(helpStyle.Render("No output yet"))
 	} else {
-		for _, line := range lines {
-			if m.width > 4 && len(line) > m.width-4 {
-				line = line[:m.width-4]
+		offset := m.termOffset
+		if offset > m.maxTermOffset() {
+			offset = m.maxTermOffset()
+		}
+
+		end := offset + visible
+		if end > len(m.terminalLines) {
+			end = len(m.terminalLines)
+		}
+
+		for i := offset; i < end; i++ {
+			line := m.terminalLines[i]
+			if maxWidth > 0 && len(line) > maxWidth {
+				line = line[:maxWidth]
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	}
 
-	remaining := maxLines - len(lines)
-	for i := 0; i < remaining; i++ {
-		b.WriteString("\n")
+	total := len(m.terminalLines)
+	top := m.termOffset + 1
+	bot := m.termOffset + visible
+	if bot > total {
+		bot = total
+	}
+	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
+
+	followTag := ""
+	if m.termFollowing {
+		followTag = progressGreen.Render("FOLLOW")
 	}
 
 	b.WriteString(separator(m.width))
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[t] back to dashboard  [q] quit"))
+	b.WriteString(helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [t/q/esc] back"))
+	b.WriteString("  ")
+	b.WriteString(labelStyle.Render(scrollInfo))
+	if followTag != "" {
+		b.WriteString("  ")
+		b.WriteString(followTag)
+	}
 
-	return b.String()
+	return borderStyle.Render(b.String())
 }
 
 func (m DashboardModel) viewDashboard() string {

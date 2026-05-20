@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -69,15 +70,16 @@ type ProcessStatus struct {
 }
 
 type ManagedProcess struct {
-	Config      ProcessConfig
-	Cmd         *exec.Cmd
-	PID         int
-	Status      string
-	StartedAt   time.Time
-	Restarts    int
+	Config        ProcessConfig
+	Cmd           *exec.Cmd
+	PID           int
+	Status        string
+	StartedAt     time.Time
+	Restarts      int
 	InstallFailed bool
-	cancelFunc context.CancelFunc
-	logBuf     *RingBuffer
+	Managed       bool
+	cancelFunc    context.CancelFunc
+	logBuf        *RingBuffer
 }
 
 type ProcessManager struct {
@@ -136,6 +138,28 @@ func (pm *ProcessManager) start(name string) error {
 
 	mp.Status = "starting"
 	pm.mu.Unlock()
+
+	// Check if the service is already running before starting a new instance
+	if mp.Config.HealthURL != "" {
+		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		hreq, _ := http.NewRequestWithContext(hctx, http.MethodGet, mp.Config.HealthURL, nil)
+		hresp, herr := http.DefaultClient.Do(hreq)
+		hcancel()
+		if herr == nil {
+			hresp.Body.Close()
+			if hresp.StatusCode == http.StatusOK {
+				pm.mu.Lock()
+				mp.Status = "running"
+				mp.StartedAt = time.Now()
+				mp.logBuf.Write("already running (health check passed, skipped start)")
+				pm.processes[name] = mp
+				pm.mu.Unlock()
+				log.Printf("[%s] already running (health check passed)", name)
+				pm.notifyChange()
+				return nil
+			}
+		}
+	}
 
 	if name == "sd" && pm.installer != nil {
 		pm.installer.PreStartForge()
@@ -207,6 +231,7 @@ func (pm *ProcessManager) start(name string) error {
 	mp.PID = cmd.Process.Pid
 	mp.StartedAt = time.Now()
 	mp.Status = "running"
+	mp.Managed = true
 
 	pm.mu.Lock()
 	pm.processes[name] = mp
@@ -329,6 +354,10 @@ func (pm *ProcessManager) Watch(ctx context.Context) {
 			pm.mu.RLock()
 			for name, mp := range pm.processes {
 				if mp.Status == "crashed" && mp.Config.Restart && mp.Restarts < mp.Config.MaxRestart {
+					if !mp.StartedAt.IsZero() && time.Since(mp.StartedAt) < 5*time.Second {
+						log.Printf("[%s] crashed too fast (%v), skipping restart", name, time.Since(mp.StartedAt))
+						continue
+					}
 					delay := backoffDuration(mp.Restarts)
 					go func(n string, m *ManagedProcess) {
 						time.Sleep(delay)
@@ -349,7 +378,10 @@ func (pm *ProcessManager) Watch(ctx context.Context) {
 func (pm *ProcessManager) StopAll() {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
-	for _, mp := range pm.processes {
+	for name, mp := range pm.processes {
+		if name == "ollama" {
+			continue
+		}
 		if mp.Status == "running" || mp.Status == "starting" {
 			platformKill(mp)
 		}

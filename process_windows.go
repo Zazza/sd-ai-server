@@ -4,6 +4,7 @@ package main
 
 import (
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -20,14 +21,31 @@ func platformKill(mp *ManagedProcess) error {
 	}
 
 	if mp.PID > 0 {
-		exec.Command("taskkill", "/PID", itoa(mp.PID), "/T", "/F").Run()
-
-		// Give process time to exit
-		time.Sleep(2 * time.Second)
+		killProcessTree(mp.PID)
+		time.Sleep(1500 * time.Millisecond)
 	}
 
 	mp.Status = "stopped"
 	return nil
+}
+
+func killProcessTree(pid int) {
+	exec.Command("taskkill", "/PID", itoa(pid), "/T", "/F").Run()
+
+	out, _ := exec.Command("wmic", "process", "where",
+		"ParentProcessId="+itoa(pid),
+		"get", "ProcessId", "/format:csv").Output()
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Node,") {
+			continue
+		}
+		fields := strings.Split(line, ",")
+		childPID := strings.TrimSpace(fields[len(fields)-1])
+		if childPID != "" && childPID != itoa(pid) {
+			exec.Command("taskkill", "/PID", childPID, "/T", "/F").Run()
+		}
+	}
 }
 
 func itoa(n int) string {
