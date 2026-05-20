@@ -60,7 +60,7 @@ func (ph *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for prefix, proxy := range ph.routes {
 		if strings.HasPrefix(r.URL.Path, prefix) {
-			// Strip the proxy prefix so /api/sd/sdapi/v1/options → /sdapi/v1/options
+			r.Header.Set("X-SD-Studio", "1")
 			http.StripPrefix(prefix, proxy).ServeHTTP(w, r)
 			return
 		}

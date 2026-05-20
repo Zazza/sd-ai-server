@@ -2,11 +2,15 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+
+	"sd-studio-server/gpuproxy"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +22,7 @@ type Config struct {
 	ActiveSD  string                    `yaml:"active_sd"`
 	Processes map[string]ProcessConfig  `yaml:"processes"`
 	Backends  map[string]BackendConfig  `yaml:"backends"`
+	Proxy     gpuproxy.Config           `yaml:"proxy"`
 }
 
 type InstallConfig struct {
@@ -209,6 +214,7 @@ func Load(path string) (*Config, error) {
 			cfg.applyEnvOverrides()
 			cfg.applyBackendToProcess()
 			cfg.applyInstallDefaults()
+			cfg.applyProxyPorts()
 			cfg.resolvePaths()
 			return &cfg, nil
 		}
@@ -227,6 +233,7 @@ func Load(path string) (*Config, error) {
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
 	cfg.applyInstallDefaults()
+	cfg.applyProxyPorts()
 	cfg.resolvePaths()
 	return &cfg, nil
 }
@@ -244,6 +251,7 @@ func LoadWithDir(path, dataDir string) (*Config, error) {
 			cfg.applyEnvOverrides()
 			cfg.applyBackendToProcess()
 			cfg.applyInstallDefaults()
+			cfg.applyProxyPorts()
 			cfg.resolvePaths()
 			return &cfg, nil
 		}
@@ -262,6 +270,7 @@ func LoadWithDir(path, dataDir string) (*Config, error) {
 	cfg.applyEnvOverrides()
 	cfg.applyBackendToProcess()
 	cfg.applyInstallDefaults()
+	cfg.applyProxyPorts()
 	cfg.resolvePaths()
 	return &cfg, nil
 }
@@ -395,4 +404,67 @@ func WriteTemplate(path string) error {
 	}
 	header := []byte("# SD Studio Server Configuration\n# Auto-generated default config\n\n")
 	return os.WriteFile(path, append(header, data...), 0644)
+}
+
+func (c *Config) applyProxyPorts() {
+	if !c.Proxy.Enabled {
+		return
+	}
+
+	for endpointName, epCfg := range c.Proxy.Endpoints {
+		realBackend, err := url.Parse(epCfg.TargetURL)
+		if err != nil {
+			continue
+		}
+
+		_, portStr, err := net.SplitHostPort(realBackend.Host)
+		if err != nil {
+			continue
+		}
+
+		proxyAddr := "http://localhost" + epCfg.ListenAddr
+
+		for procKey, pc := range c.Processes {
+			if pc.ProxyPath == "" {
+				continue
+			}
+
+			matched := false
+			switch {
+			case endpointName == "ollama" && pc.ProxyPath == "/api/llm/":
+				matched = true
+			case endpointName == "sd" && pc.ProxyPath == "/api/sd/":
+				matched = true
+			}
+			if !matched {
+				continue
+			}
+
+			pc.TargetURL = proxyAddr
+			pc.HealthURL = "http://" + realBackend.Host
+
+			switch endpointName {
+			case "ollama":
+				pc.HealthURL = pc.HealthURL + "/api/tags"
+				if pc.Env == nil {
+					pc.Env = make(map[string]string)
+				}
+				pc.Env["OLLAMA_HOST"] = realBackend.Host
+			case "sd":
+				pc.HealthURL = pc.HealthURL + "/sdapi/v1/options"
+				hasPort := false
+				for _, a := range pc.Args {
+					if a == "--port" {
+						hasPort = true
+						break
+					}
+				}
+				if !hasPort {
+					pc.Args = append(pc.Args, "--port", portStr)
+				}
+			}
+
+			c.Processes[procKey] = pc
+		}
+	}
 }

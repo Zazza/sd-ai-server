@@ -16,6 +16,7 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"sd-studio-server/gpuproxy"
 	"sd-studio-server/tui"
 )
 
@@ -84,6 +85,15 @@ func runHeadless(cfg *Config) {
 
 	inst.EnsureAllInstalled()
 	ensureOllamaBinary(cfg, inst)
+
+	var gpuProxy *gpuproxy.Proxy
+	if cfg.Proxy.Enabled {
+		gpuProxy = gpuproxy.New(cfg.Proxy)
+		if err := gpuProxy.Start(); err != nil {
+			log.Fatalf("GPU proxy start failed: %v", err)
+		}
+	}
+
 	pm.StartAll()
 
 	go pm.Watch(ctx)
@@ -115,6 +125,9 @@ func runHeadless(cfg *Config) {
 
 		cancel()
 		srv.Shutdown(shutdownCtx)
+		if gpuProxy != nil {
+			gpuProxy.Stop()
+		}
 		mdns.Shutdown()
 		pm.StopAll()
 
@@ -180,6 +193,14 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	var gpuProxy *gpuproxy.Proxy
+	if cfg.Proxy.Enabled {
+		gpuProxy = gpuproxy.New(cfg.Proxy)
+		if err := gpuProxy.Start(); err != nil {
+			log.Fatalf("GPU proxy start failed: %v", err)
+		}
+	}
 
 	deps := tui.ServerDeps{
 		Port:         cfg.Port,
@@ -311,6 +332,9 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer shutdownCancel()
 		srv.Shutdown(shutdownCtx)
+		if gpuProxy != nil {
+			gpuProxy.Stop()
+		}
 		pm.StopAll()
 	}()
 
@@ -325,6 +349,9 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 
 	cancel()
 	pm.StopAll()
+	if gpuProxy != nil {
+		gpuProxy.Stop()
+	}
 	mdns.Shutdown()
 }
 
