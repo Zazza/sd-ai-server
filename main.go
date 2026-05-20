@@ -329,7 +329,7 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		srv.Shutdown(shutdownCtx)
 		if gpuProxy != nil {
@@ -347,12 +347,18 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		log.Fatalf("TUI error: %v", err)
 	}
 
+	go func() {
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	}()
+
 	cancel()
 	pm.StopAll()
 	if gpuProxy != nil {
 		gpuProxy.Stop()
 	}
 	mdns.Shutdown()
+	os.Exit(0)
 }
 
 func saveConfig(path string, cfg *Config) error {
