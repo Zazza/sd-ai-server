@@ -10,8 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var fullscreenStyle = lipgloss.NewStyle()
-
 type DashboardModel struct {
 	deps          ServerDeps
 	ip            string
@@ -314,11 +312,16 @@ func (m DashboardModel) View() string {
 	return m.viewDashboard()
 }
 
+var headerBg = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("#FAFAFA")).
+		Background(lipgloss.Color("#7D56F4"))
+
 func (m DashboardModel) viewLogs() string {
 	w, h := m.width, m.height
 
 	var lines []string
-	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render(fmt.Sprintf("Logs: %s", m.logKey)))
+	lines = append(lines, headerBg.Render(fmt.Sprintf(" Logs: %s ", m.logKey)))
 	lines = append(lines, sep(w))
 
 	visible := h - 4
@@ -341,14 +344,14 @@ func (m DashboardModel) viewLogs() string {
 	}
 	lines = append(lines, footer)
 
-	return fullscreen(w, h, lines)
+	return fillScreen(w, h, lines)
 }
 
 func (m DashboardModel) viewTerminal() string {
 	w, h := m.width, m.height
 
 	var lines []string
-	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render("Terminal"))
+	lines = append(lines, headerBg.Render(" Terminal "))
 	lines = append(lines, sep(w))
 
 	visible := h - 4
@@ -371,7 +374,7 @@ func (m DashboardModel) viewTerminal() string {
 	}
 	lines = append(lines, footer)
 
-	return fullscreen(w, h, lines)
+	return fillScreen(w, h, lines)
 }
 
 func (m DashboardModel) renderScrollArea(logLines []string, offset, visible, width int) []string {
@@ -419,8 +422,8 @@ func (m DashboardModel) viewDashboard() string {
 	var lines []string
 
 	port := m.deps.Port
-	header := fmt.Sprintf("SD Studio Server    %s  %s:%d", runningStyle.Render("[RUNNING]"), m.ip, port)
-	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render(header))
+	header := fmt.Sprintf(" SD Studio Server   %s  %s:%d ", runningStyle.Render("[RUNNING]"), m.ip, port)
+	lines = append(lines, headerBg.Render(header))
 	lines = append(lines, sep(w))
 	lines = append(lines, m.renderMetrics()...)
 	lines = append(lines, sep(w))
@@ -431,7 +434,7 @@ func (m DashboardModel) viewDashboard() string {
 		si := m.services[key]
 		cursor := " "
 		if i == m.cursor {
-			cursor = lipgloss.NewStyle().Foreground(lipgloss.Color("#7D56F4")).Render(">")
+			cursor = selectedStyle.Render(">")
 		}
 
 		var statusIcon, statusText string
@@ -440,9 +443,9 @@ func (m DashboardModel) viewDashboard() string {
 			statusIcon = healthyStyle.Render("*")
 			healthText := ""
 			if si.Healthy {
-				healthText = fmt.Sprintf(" healthy %dms", si.Latency)
+				healthText = fmt.Sprintf(" ok %dms", si.Latency)
 			}
-			statusText = fmt.Sprintf("%s PID %d  %s%s", runningStyle.Render("running"), si.PID, si.Uptime, healthText)
+			statusText = fmt.Sprintf("%s PID %d %s%s", runningStyle.Render("running"), si.PID, si.Uptime, healthText)
 		case "crashed":
 			statusIcon = crashedStyle.Render("!")
 			statusText = crashedStyle.Render("crashed")
@@ -461,7 +464,7 @@ func (m DashboardModel) viewDashboard() string {
 
 	lines = append(lines, helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
 
-	return fullscreen(w, h, lines)
+	return fillScreen(w, h, lines)
 }
 
 func (m DashboardModel) renderMetrics() []string {
@@ -502,16 +505,33 @@ func formatMemMB(bytes uint64) string {
 }
 
 func sep(w int) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")).Render(strings.Repeat("-", w))
+	return strings.Repeat("-", w)
 }
 
-func fullscreen(w, h int, lines []string) string {
+func fillScreen(w, h int, lines []string) string {
 	for len(lines) < h {
 		lines = append(lines, "")
 	}
 	if len(lines) > h {
 		lines = lines[:h]
 	}
-	content := strings.Join(lines, "\n")
-	return fullscreenStyle.Width(w).Height(h).Render(content)
+	var b strings.Builder
+	for i, l := range lines {
+		pad := w - lipgloss.Width(l)
+		if pad > 0 {
+			b.WriteString(l)
+			b.WriteString(strings.Repeat(" ", pad))
+		} else {
+			runes := []rune(l)
+			if len(runes) > w {
+				b.WriteString(string(runes[:w]))
+			} else {
+				b.WriteString(l)
+			}
+		}
+		if i < h-1 {
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
