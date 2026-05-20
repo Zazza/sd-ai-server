@@ -10,6 +10,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+var fullscreenStyle = lipgloss.NewStyle()
+
 type DashboardModel struct {
 	deps          ServerDeps
 	ip            string
@@ -300,6 +302,9 @@ func (m DashboardModel) maxTermOffset() int {
 }
 
 func (m DashboardModel) View() string {
+	if m.width == 0 || m.height == 0 {
+		return "Loading..."
+	}
 	if m.showTerminal {
 		return m.viewTerminal()
 	}
@@ -311,23 +316,16 @@ func (m DashboardModel) View() string {
 
 func (m DashboardModel) viewLogs() string {
 	w, h := m.width, m.height
-	if w < 40 {
-		w = 40
-	}
-	if h < 10 {
-		h = 10
-	}
 
 	var lines []string
-
-	lines = append(lines, titleStyle.Render(fmt.Sprintf(" Logs: %s ", m.logKey)))
-	lines = append(lines, separator(w))
+	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render(fmt.Sprintf("Logs: %s", m.logKey)))
+	lines = append(lines, sep(w))
 
 	visible := h - 4
 	contentArea := m.renderScrollArea(m.logLines, m.logOffset, visible, w)
 	lines = append(lines, contentArea...)
 
-	lines = append(lines, separator(w))
+	lines = append(lines, sep(w))
 
 	total := len(m.logLines)
 	top := m.logOffset + 1
@@ -335,7 +333,7 @@ func (m DashboardModel) viewLogs() string {
 	if bot > total {
 		bot = total
 	}
-	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
+	scrollInfo := fmt.Sprintf("line %d-%d/%d", top, bot, total)
 	footer := helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [q/esc] back")
 	footer += "  " + labelStyle.Render(scrollInfo)
 	if m.logFollowing {
@@ -343,28 +341,21 @@ func (m DashboardModel) viewLogs() string {
 	}
 	lines = append(lines, footer)
 
-	return padLines(lines, w, h)
+	return fullscreen(w, h, lines)
 }
 
 func (m DashboardModel) viewTerminal() string {
 	w, h := m.width, m.height
-	if w < 40 {
-		w = 40
-	}
-	if h < 10 {
-		h = 10
-	}
 
 	var lines []string
-
-	lines = append(lines, titleStyle.Render(" Terminal "))
-	lines = append(lines, separator(w))
+	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render("Terminal"))
+	lines = append(lines, sep(w))
 
 	visible := h - 4
 	contentArea := m.renderScrollArea(m.terminalLines, m.termOffset, visible, w)
 	lines = append(lines, contentArea...)
 
-	lines = append(lines, separator(w))
+	lines = append(lines, sep(w))
 
 	total := len(m.terminalLines)
 	top := m.termOffset + 1
@@ -372,7 +363,7 @@ func (m DashboardModel) viewTerminal() string {
 	if bot > total {
 		bot = total
 	}
-	scrollInfo := fmt.Sprintf(" line %d-%d/%d ", top, bot, total)
+	scrollInfo := fmt.Sprintf("line %d-%d/%d", top, bot, total)
 	footer := helpStyle.Render("[j/k/pgup/pgdn/g/G] scroll  [t/q/esc] back")
 	footer += "  " + labelStyle.Render(scrollInfo)
 	if m.termFollowing {
@@ -380,7 +371,7 @@ func (m DashboardModel) viewTerminal() string {
 	}
 	lines = append(lines, footer)
 
-	return padLines(lines, w, h)
+	return fullscreen(w, h, lines)
 }
 
 func (m DashboardModel) renderScrollArea(logLines []string, offset, visible, width int) []string {
@@ -407,7 +398,12 @@ func (m DashboardModel) renderScrollArea(logLines []string, offset, visible, wid
 	}
 
 	for i := offset; i < end; i++ {
-		result = append(result, truncateVisual(logLines[i], width))
+		line := logLines[i]
+		runes := []rune(line)
+		if len(runes) > width {
+			line = string(runes[:width])
+		}
+		result = append(result, line)
 	}
 
 	for len(result) < visible {
@@ -419,21 +415,15 @@ func (m DashboardModel) renderScrollArea(logLines []string, offset, visible, wid
 
 func (m DashboardModel) viewDashboard() string {
 	w, h := m.width, m.height
-	if w < 40 {
-		w = 40
-	}
-	if h < 10 {
-		h = 10
-	}
 
 	var lines []string
 
 	port := m.deps.Port
-	header := fmt.Sprintf(" SD Studio Server    %s  %s:%d ", runningStyle.Render("[RUNNING]"), m.ip, port)
-	lines = append(lines, titleStyle.Width(w).Render(header))
-	lines = append(lines, separator(w))
+	header := fmt.Sprintf("SD Studio Server    %s  %s:%d", runningStyle.Render("[RUNNING]"), m.ip, port)
+	lines = append(lines, titleStyle.Padding(0, 1).Width(w).Render(header))
+	lines = append(lines, sep(w))
 	lines = append(lines, m.renderMetrics()...)
-	lines = append(lines, separator(w))
+	lines = append(lines, sep(w))
 	lines = append(lines, subtitleStyle.Render("SERVICES"))
 
 	keys := m.serviceKeys()
@@ -447,14 +437,14 @@ func (m DashboardModel) viewDashboard() string {
 		var statusIcon, statusText string
 		switch si.Status {
 		case "running":
-			statusIcon = healthyStyle.Render("●")
+			statusIcon = healthyStyle.Render("*")
 			healthText := ""
 			if si.Healthy {
 				healthText = fmt.Sprintf(" healthy %dms", si.Latency)
 			}
 			statusText = fmt.Sprintf("%s PID %d  %s%s", runningStyle.Render("running"), si.PID, si.Uptime, healthText)
 		case "crashed":
-			statusIcon = crashedStyle.Render("●")
+			statusIcon = crashedStyle.Render("!")
 			statusText = crashedStyle.Render("crashed")
 		default:
 			statusIcon = stoppedStyle.Render("o")
@@ -471,7 +461,7 @@ func (m DashboardModel) viewDashboard() string {
 
 	lines = append(lines, helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
 
-	return padLines(lines, w, h)
+	return fullscreen(w, h, lines)
 }
 
 func (m DashboardModel) renderMetrics() []string {
@@ -511,38 +501,17 @@ func formatMemMB(bytes uint64) string {
 	return fmt.Sprintf("%.0fMB", float64(bytes)/float64(MB))
 }
 
-func separator(width int) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")).Render(strings.Repeat("─", width))
+func sep(w int) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#333333")).Render(strings.Repeat("-", w))
 }
 
-func padLines(lines []string, w, h int) string {
+func fullscreen(w, h int, lines []string) string {
 	for len(lines) < h {
 		lines = append(lines, "")
 	}
 	if len(lines) > h {
 		lines = lines[:h]
 	}
-	for i, l := range lines {
-		lines[i] = padRight(l, w)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func padRight(s string, width int) string {
-	visual := lipgloss.Width(s)
-	if visual >= width {
-		return s
-	}
-	return s + strings.Repeat(" ", width-visual)
-}
-
-func truncateVisual(s string, maxRunes int) string {
-	if maxRunes <= 0 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes])
+	content := strings.Join(lines, "\n")
+	return fullscreenStyle.Width(w).Height(h).Render(content)
 }
