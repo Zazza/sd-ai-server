@@ -44,6 +44,13 @@ type Installer struct {
 	OnProgress func(key, progress string)
 }
 
+func (inst *Installer) resolveTarget(target string) string {
+	if filepath.IsAbs(target) {
+		return target
+	}
+	return filepath.Join(inst.config.DataDir, target)
+}
+
 func NewInstaller(cfg *Config) *Installer {
 	inst := &Installer{
 		config:   cfg,
@@ -238,9 +245,10 @@ func (inst *Installer) doInstall(key string, ic InstallConfig, lb *RingBuffer) e
 }
 
 func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) error {
+	target := inst.resolveTarget(ic.Target)
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s -> %s", ic.URL, ic.Target))
-	log.Printf("[%s] downloading %s -> %s", key, ic.URL, ic.Target)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", ic.URL, target))
+	log.Printf("[%s] downloading %s -> %s", key, ic.URL, target)
 
 	resp, err := http.Get(ic.URL)
 	if err != nil {
@@ -278,20 +286,20 @@ func (inst *Installer) installZip(key string, ic InstallConfig, lb *RingBuffer) 
 	log.Printf("[%s] downloaded %s", key, formatBytes(size))
 
 	inst.setProgress(key, "extracting")
-	lb.Write(fmt.Sprintf("Extracting to %s", ic.Target))
-	log.Printf("[%s] extracting to %s", key, ic.Target)
+	lb.Write(fmt.Sprintf("Extracting to %s", target))
+	log.Printf("[%s] extracting to %s", key, target)
 
-	if err := extractZip(tmpPath, ic.Target); err != nil {
+	if err := extractZip(tmpPath, target); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
 
 	if key == "forge" {
-		ensureForgeVenv(inst.config.DataDir, ic.Target, lb)
-		preInstallForgeDeps(inst.config.DataDir, ic.Target, lb)
+		ensureForgeVenv(inst.config.DataDir, target, lb)
+		preInstallForgeDeps(inst.config.DataDir, target, lb)
 	}
 
 	lb.Write("Installation complete")
-	log.Printf("[%s] installed to %s", key, ic.Target)
+	log.Printf("[%s] installed to %s", key, target)
 	return nil
 }
 
@@ -302,9 +310,10 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 		url = strings.ReplaceAll(url, "{arch}", runtime.GOARCH)
 	}
 
+	target := inst.resolveTarget(ic.Target)
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s -> %s", url, ic.Target))
-	log.Printf("[%s] downloading %s -> %s", key, url, ic.Target)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", url, target))
+	log.Printf("[%s] downloading %s -> %s", key, url, target)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -317,12 +326,12 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
 	}
 
-	targetDir := filepath.Dir(ic.Target)
+	targetDir := filepath.Dir(target)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("create target dir: %w", err)
 	}
 
-	f, err := os.OpenFile(ic.Target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 	if err != nil {
 		return fmt.Errorf("create binary: %w", err)
 	}
@@ -332,7 +341,7 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 		w:        f,
 		total:    totalSize,
 		key:      key,
-		target:   ic.Target,
+		target:   target,
 		lastLog:  0,
 		lastTime: 0,
 		inst:     inst,
@@ -341,16 +350,16 @@ func (inst *Installer) installBinary(key string, ic InstallConfig, lb *RingBuffe
 	size, err := io.Copy(pw, resp.Body)
 	f.Close()
 	if err != nil {
-		os.Remove(ic.Target)
+		os.Remove(target)
 		return fmt.Errorf("save binary: %w", err)
 	}
 
-	if err := os.Chmod(ic.Target, 0755); err != nil {
+	if err := os.Chmod(target, 0755); err != nil {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
-	lb.Write(fmt.Sprintf("Installed binary %s (%s)", ic.Target, formatBytes(size)))
-	log.Printf("[%s] installed binary %s (%s)", key, ic.Target, formatBytes(size))
+	lb.Write(fmt.Sprintf("Installed binary %s (%s)", target, formatBytes(size)))
+	log.Printf("[%s] installed binary %s (%s)", key, target, formatBytes(size))
 	return nil
 }
 
@@ -361,9 +370,10 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 		url = strings.ReplaceAll(url, "{arch}", runtime.GOARCH)
 	}
 
+	target := inst.resolveTarget(ic.Target)
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s -> %s", url, ic.Target))
-	log.Printf("[%s] downloading %s -> %s", key, url, ic.Target)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", url, target))
+	log.Printf("[%s] downloading %s -> %s", key, url, target)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -388,7 +398,7 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 		w:        tmpFile,
 		total:    resp.ContentLength,
 		key:      key,
-		target:   ic.Target,
+		target:   target,
 		lastLog:  0,
 		lastTime: 0,
 		inst:     inst,
@@ -402,13 +412,13 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 	lb.Write(fmt.Sprintf("Downloaded %s", formatBytes(size)))
 	log.Printf("[%s] downloaded %s", key, formatBytes(size))
 
-	targetDir := filepath.Dir(ic.Target)
+	targetDir := filepath.Dir(target)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("create target dir: %w", err)
 	}
 
-	binaryName := filepath.Base(ic.Target)
-	targetPath := ic.Target
+	binaryName := filepath.Base(target)
+	targetPath := target
 
 	if runtime.GOOS == "windows" && !strings.HasSuffix(binaryName, ".exe") {
 		binaryName += ".exe"
@@ -443,9 +453,10 @@ func (inst *Installer) installArchive(key string, ic InstallConfig, lb *RingBuff
 }
 
 func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) error {
+	target := inst.resolveTarget(ic.Target)
 	inst.setProgress(key, "downloading")
-	lb.Write(fmt.Sprintf("Downloading %s -> %s", ic.URL, ic.Target))
-	log.Printf("[%s] downloading %s -> %s", key, ic.URL, ic.Target)
+	lb.Write(fmt.Sprintf("Downloading %s -> %s", ic.URL, target))
+	log.Printf("[%s] downloading %s -> %s", key, ic.URL, target)
 
 	resp, err := http.Get(ic.URL)
 	if err != nil {
@@ -468,7 +479,7 @@ func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) 
 		w:        tmpFile,
 		total:    resp.ContentLength,
 		key:      key,
-		target:   ic.Target,
+		target:   target,
 		lastLog:  0,
 		lastTime: 0,
 		inst:     inst,
@@ -483,25 +494,25 @@ func (inst *Installer) installTgz(key string, ic InstallConfig, lb *RingBuffer) 
 	log.Printf("[%s] downloaded %s", key, formatBytes(size))
 
 	inst.setProgress(key, "extracting")
-	lb.Write(fmt.Sprintf("Extracting to %s", ic.Target))
-	log.Printf("[%s] extracting to %s", key, ic.Target)
+	lb.Write(fmt.Sprintf("Extracting to %s", target))
+	log.Printf("[%s] extracting to %s", key, target)
 
-	if err := extractTgz(tmpPath, ic.Target); err != nil {
+	if err := extractTgz(tmpPath, target); err != nil {
 		return fmt.Errorf("extract: %w", err)
 	}
 
 	if key == "python" {
-		createPythonSymlinks(ic.Target, lb)
-		ensurePipAndSetuptools(ic.Target, lb)
+		createPythonSymlinks(target, lb)
+		ensurePipAndSetuptools(target, lb)
 	}
 
 	if key == "forge" {
-		ensureForgeVenv(inst.config.DataDir, ic.Target, lb)
-		preInstallForgeDeps(inst.config.DataDir, ic.Target, lb)
+		ensureForgeVenv(inst.config.DataDir, target, lb)
+		preInstallForgeDeps(inst.config.DataDir, target, lb)
 	}
 
 	lb.Write("Installation complete")
-	log.Printf("[%s] installed to %s", key, ic.Target)
+	log.Printf("[%s] installed to %s", key, target)
 	return nil
 }
 
@@ -803,20 +814,20 @@ func (inst *Installer) installPip(key string, ic InstallConfig, lb *RingBuffer) 
 
 func (inst *Installer) checkInstalled(ic InstallConfig) bool {
 	switch ic.Method {
-	case InstallZip:
+	case InstallZip, InstallTgz:
 		if ic.Target == "" {
 			return false
 		}
-		_, err := os.Stat(ic.Target)
-		return err == nil
-	case InstallBinary, InstallArchive, InstallTgz:
+		target := inst.resolveTarget(ic.Target)
+		st, err := os.Stat(target)
+		return err == nil && st.IsDir()
+	case InstallBinary, InstallArchive:
 		if ic.Target == "" {
 			return false
 		}
-		target := ic.Target
+		target := inst.resolveTarget(ic.Target)
 		if runtime.GOOS == "windows" && !strings.HasSuffix(target, ".exe") {
-			_, err := os.Stat(target + ".exe")
-			return err == nil
+			target += ".exe"
 		}
 		_, err := os.Stat(target)
 		return err == nil

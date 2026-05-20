@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Handlers struct {
@@ -43,11 +45,13 @@ func (h *Handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 	healthResults := h.health.Results()
 	gpuInfo := h.gpu.Info()
 
+	models := h.fetchModels()
 	resp := map[string]interface{}{
 		"processes": statuses,
 		"health":    healthResults,
 		"gpu":       gpuInfo,
 		"installs":  h.installer.Status(),
+		"models":    models,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -145,6 +149,61 @@ func (h *Handlers) handleLogs(w http.ResponseWriter, r *http.Request) {
 		"lines":   lines,
 		"logs":    logs,
 	})
+}
+
+func (h *Handlers) fetchModels() map[string]interface{} {
+	models := make(map[string]interface{})
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	if pc, ok := h.config.Processes["sd"]; ok && pc.TargetURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, pc.TargetURL+"/sdapi/v1/options", nil)
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			var opts map[string]interface{}
+			if json.NewDecoder(resp.Body).Decode(&opts) == nil {
+				if cp, ok := opts["sd_model_checkpoint"].(string); ok {
+					models["sd_checkpoint"] = cp
+				}
+			}
+		}
+	}
+
+	if pc, ok := h.config.Processes["ollama"]; ok && pc.TargetURL != "" {
+		llmModels := h.fetchOllamaRunningModels(client, pc.TargetURL)
+		if len(llmModels) > 0 {
+			models["llm_running"] = llmModels
+		}
+	}
+
+	return models
+}
+
+func (h *Handlers) fetchOllamaRunningModels(client *http.Client, baseURL string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/ps", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) != nil {
+		return nil
+	}
+	names := make([]string, 0, len(result.Models))
+	for _, m := range result.Models {
+		names = append(names, m.Name)
+	}
+	return names
 }
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
