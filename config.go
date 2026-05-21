@@ -16,13 +16,14 @@ import (
 )
 
 type Config struct {
-	Port      int                       `yaml:"port"`
-	MDNS      bool                      `yaml:"mdns"`
-	DataDir   string                    `yaml:"data_dir"`
-	ActiveSD  string                    `yaml:"active_sd"`
-	Processes map[string]ProcessConfig  `yaml:"processes"`
-	Backends  map[string]BackendConfig  `yaml:"backends"`
-	Proxy     gpuproxy.Config           `yaml:"proxy"`
+	Port           int                       `yaml:"port"`
+	MDNS           bool                      `yaml:"mdns"`
+	DataDir        string                    `yaml:"data_dir"`
+	ActiveSD       string                    `yaml:"active_sd"`
+	DetectedVRAMMB int                       `yaml:"detected_vram_mb"`
+	Processes      map[string]ProcessConfig  `yaml:"processes"`
+	Backends       map[string]BackendConfig  `yaml:"backends"`
+	Proxy          gpuproxy.Config           `yaml:"proxy"`
 }
 
 type InstallConfig struct {
@@ -57,6 +58,7 @@ type BackendConfig struct {
 	LoraDir      string        `yaml:"lora_dir"`
 	VaeDir       string        `yaml:"vae_dir"`
 	EmbeddingDir string        `yaml:"embedding_dir"`
+	AutoOptimize bool          `yaml:"auto_optimize"`
 	Install      InstallConfig `yaml:"install"`
 }
 
@@ -157,6 +159,7 @@ func newDefaultConfig() Config {
 				ProcessKey:   "sd",
 				Binary:       defaultForgeBinary(),
 				Args:         []string{"launch.py", "--listen", "--api", "--xformers", "--medvram-sdxl"},
+				AutoOptimize: true,
 				WorkDir:      "stable-diffusion-webui-forge",
 				ModelsDir:    "stable-diffusion-webui-forge/models/Stable-diffusion",
 				LoraDir:      "stable-diffusion-webui-forge/models/Lora",
@@ -364,7 +367,14 @@ func (c *Config) applyBackendToProcess() {
 		return
 	}
 	proc.Binary = backend.Binary
-	proc.Args = backend.Args
+	if backend.AutoOptimize {
+		gm := NewGPUMonitor()
+		gpu := gm.Detect()
+		c.DetectedVRAMMB = gpu.MemoryTotal
+		proc.Args = forgeArgsForVRAM(gpu.MemoryTotal)
+	} else {
+		proc.Args = backend.Args
+	}
 	proc.WorkDir = backend.WorkDir
 	if proc.Install.Method == "" && backend.Install.Method != "" {
 		proc.Install = backend.Install

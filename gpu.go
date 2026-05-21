@@ -118,3 +118,24 @@ func atoi(s string) int {
 	n, _ := strconv.Atoi(s)
 	return n
 }
+
+func (gm *GPUMonitor) Detect() GPUInfo {
+	gm.poll()
+	return gm.Info()
+}
+
+func forgeArgsForVRAM(vramMB int) []string {
+	base := []string{"launch.py", "--listen", "--api", "--xformers"}
+	switch {
+	case vramMB <= 0:
+		return append(base, "--medvram-sdxl")
+	case vramMB < 6000:
+		return append(base, "--lowvram")
+	case vramMB < 8192:
+		return append(base, "--medvram")
+	case vramMB < 12288:
+		return append(base, "--medvram-sdxl")
+	default:
+		return base
+	}
+}
