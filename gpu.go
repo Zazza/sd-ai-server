@@ -129,12 +129,31 @@ func checkXformersCompat(pythonBinary, workDir string) bool {
 		return false
 	}
 	cmd := exec.Command(pythonBinary, "-c",
-		"import xformers; import xformers._C; print('ok')",
+		"import sys; import torch; "+
+			"ok = torch.cuda.is_available(); "+
+			"ok = ok and torch.cuda.memory_allocated() == 0; "+
+			"sys.exit(0 if ok else 1)",
 	)
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	out, err := cmd.CombinedOutput()
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+
+	cmd = exec.Command(pythonBinary, "-c",
+		"import torch; "+
+			"q=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
+			"k=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
+			"v=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
+			"import xformers.ops; "+
+			"xformers.ops.memory_efficient_attention(q,k,v); "+
+			"print('ok')",
+	)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
