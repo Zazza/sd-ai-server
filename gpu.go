@@ -124,8 +124,28 @@ func (gm *GPUMonitor) Detect() GPUInfo {
 	return gm.Info()
 }
 
-func forgeArgsForVRAM(vramMB int) []string {
-	base := []string{"launch.py", "--listen", "--api", "--xformers"}
+func checkXformersCompat(pythonBinary, workDir string) bool {
+	if pythonBinary == "" {
+		return false
+	}
+	cmd := exec.Command(pythonBinary, "-c",
+		"import xformers; import xformers._C; print('ok')",
+	)
+	if workDir != "" {
+		cmd.Dir = workDir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "ok"
+}
+
+func forgeArgsForVRAM(vramMB int, useXformers bool) []string {
+	base := []string{"launch.py", "--listen", "--api"}
+	if useXformers {
+		base = append(base, "--xformers")
+	}
 	switch {
 	case vramMB <= 0:
 		return append(base, "--medvram-sdxl")
@@ -133,8 +153,6 @@ func forgeArgsForVRAM(vramMB int) []string {
 		return append(base, "--lowvram")
 	case vramMB < 8192:
 		return append(base, "--medvram")
-	case vramMB < 12288:
-		return append(base, "--medvram-sdxl")
 	default:
 		return base
 	}

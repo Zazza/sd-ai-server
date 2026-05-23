@@ -371,7 +371,8 @@ func (c *Config) applyBackendToProcess() {
 		gm := NewGPUMonitor()
 		gpu := gm.Detect()
 		c.DetectedVRAMMB = gpu.MemoryTotal
-		proc.Args = forgeArgsForVRAM(gpu.MemoryTotal)
+		useXformers := checkXformersCompat(proc.Binary, backend.WorkDir)
+		proc.Args = forgeArgsForVRAM(gpu.MemoryTotal, useXformers)
 	} else {
 		proc.Args = backend.Args
 	}
