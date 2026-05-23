@@ -375,6 +375,7 @@ func (c *Config) applyBackendToProcess() {
 		c.DetectedVRAMMB = gpu.MemoryTotal
 		useXformers := checkXformersCompat(proc.Binary, backend.WorkDir)
 		proc.Args = forgeArgsForVRAM(gpu.MemoryTotal, useXformers)
+		log.Printf("[config] auto-optimize: vram=%dMB, xformers=%v, args=%v", gpu.MemoryTotal, useXformers, proc.Args)
 	} else {
 		proc.Args = backend.Args
 	}
