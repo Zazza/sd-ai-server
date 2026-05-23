@@ -128,27 +128,10 @@ func checkXformersCompat(pythonBinary, workDir string) bool {
 	if pythonBinary == "" {
 		return false
 	}
+	// PyTorch 2.0+ has native scaled_dot_product_attention — xformers not needed
 	cmd := exec.Command(pythonBinary, "-c",
-		"import sys; import torch; "+
-			"ok = torch.cuda.is_available(); "+
-			"ok = ok and torch.cuda.memory_allocated() == 0; "+
-			"sys.exit(0 if ok else 1)",
-	)
-	if workDir != "" {
-		cmd.Dir = workDir
-	}
-	if err := cmd.Run(); err != nil {
-		return false
-	}
-
-	cmd = exec.Command(pythonBinary, "-c",
-		"import torch; "+
-			"q=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
-			"k=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
-			"v=torch.randn(1,1,8,device='cuda',dtype=torch.float16); "+
-			"import xformers.ops; "+
-			"xformers.ops.memory_efficient_attention(q,k,v); "+
-			"print('ok')",
+		"import torch; v=tuple(int(x) for x in torch.__version__.split('+')[0].split('.')[:2]); "+
+			"print('native' if v>=(2,0) else 'legacy')",
 	)
 	if workDir != "" {
 		cmd.Dir = workDir
@@ -157,7 +140,7 @@ func checkXformersCompat(pythonBinary, workDir string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == "ok"
+	return strings.TrimSpace(string(out)) == "legacy"
 }
 
 func forgeArgsForVRAM(vramMB int, useXformers bool) []string {
