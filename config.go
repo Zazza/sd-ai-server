@@ -114,7 +114,9 @@ func newDefaultConfig() Config {
 				AutoStart:  true,
 				Restart:    true,
 				MaxRestart: 5,
-				Env:        map[string]string{},
+				Env: map[string]string{
+					"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+				},
 			},
 			"ollama": {
 				Name:       "Ollama",
