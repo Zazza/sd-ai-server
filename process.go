@@ -230,7 +230,7 @@ func (pm *ProcessManager) start(name string) error {
 
 	mp.PID = cmd.Process.Pid
 	mp.StartedAt = time.Now()
-	mp.Status = "running"
+	mp.Status = "starting"
 	mp.Managed = true
 
 	pm.mu.Lock()
@@ -238,14 +238,38 @@ func (pm *ProcessManager) start(name string) error {
 	pm.mu.Unlock()
 
 	log.Printf("[%s] started (pid=%d binary=%s workdir=%s)", name, mp.PID, mp.Config.Binary, mp.Config.WorkDir)
-	if mp.Config.HealthURL != "" {
-		log.Printf("[%s] waiting for healthy response from %s ...", name, mp.Config.HealthURL)
-	}
 	pm.notifyChange()
 
 	// Pipe stdout/stderr to ring buffer and server stdout
 	go pipeLogs(stdout, mp.logBuf, name)
 	go pipeLogs(stderr, mp.logBuf, name)
+
+	// Wait for health check, then mark as running
+	go func() {
+		if mp.Config.HealthURL != "" {
+			log.Printf("[%s] waiting for healthy response from %s ...", name, mp.Config.HealthURL)
+			for i := 0; i < 120; i++ {
+				hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
+				hreq, _ := http.NewRequestWithContext(hctx, http.MethodGet, mp.Config.HealthURL, nil)
+				hresp, herr := http.DefaultClient.Do(hreq)
+				hcancel()
+				if herr == nil {
+					hresp.Body.Close()
+					if hresp.StatusCode == http.StatusOK {
+						break
+					}
+				}
+				time.Sleep(2 * time.Second)
+			}
+		}
+
+		pm.mu.Lock()
+		mp.Status = "running"
+		pm.processes[name] = mp
+		pm.mu.Unlock()
+		log.Printf("[%s] healthy", name)
+		pm.notifyChange()
+	}()
 
 	// Wait for process exit
 	go func() {
