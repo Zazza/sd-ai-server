@@ -1,4 +1,4 @@
-package main
+package health
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"sd-studio-server/config"
 )
 
 type HealthResult struct {
@@ -19,12 +21,12 @@ type HealthResult struct {
 type HealthMonitor struct {
 	mu       sync.RWMutex
 	results  map[string]HealthResult
-	config   *Config
+	config   *config.Config
 	client   *http.Client
 	OnUpdate func(map[string]HealthResult)
 }
 
-func NewHealthMonitor(cfg *Config) *HealthMonitor {
+func NewHealthMonitor(cfg *config.Config) *HealthMonitor {
 	return &HealthMonitor{
 		results: make(map[string]HealthResult),
 		config:  cfg,
@@ -36,7 +38,6 @@ func (hm *HealthMonitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
-	// Run initial check immediately
 	hm.checkAll()
 
 	for {
@@ -119,7 +120,6 @@ func (hm *HealthMonitor) Results() map[string]HealthResult {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 
-	// Return a copy
 	result := make(map[string]HealthResult, len(hm.results))
 	for k, v := range hm.results {
 		result[k] = v

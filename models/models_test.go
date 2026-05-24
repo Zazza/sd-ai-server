@@ -1,4 +1,4 @@
-package main
+package models
 
 import (
 	"bytes"
@@ -14,13 +14,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"sd-studio-server/config"
 )
 
 func newTestModelManager(t *testing.T, modelsDir string) *ModelManager {
 	t.Helper()
-	cfg := &Config{
+	cfg := &config.Config{
 		ActiveSD: "test",
-		Backends: map[string]BackendConfig{
+		Backends: map[string]config.BackendConfig{
 			"test": {
 				Name:      "Test",
 				ModelsDir: modelsDir,
@@ -106,9 +108,9 @@ func TestHandleDownloadStream_MethodNotAllowed(t *testing.T) {
 func TestHandleDownloadStream_NoActiveBackend(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{
+	cfg := &config.Config{
 		ActiveSD: "nonexistent",
-		Backends: map[string]BackendConfig{},
+		Backends: map[string]config.BackendConfig{},
 	}
 	mm := NewModelManager(cfg)
 
@@ -128,9 +130,9 @@ func TestHandleDownloadStream_NoActiveBackend(t *testing.T) {
 func TestHandleDownloadStream_EmptyDir(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Config{
+	cfg := &config.Config{
 		ActiveSD: "test",
-		Backends: map[string]BackendConfig{
+		Backends: map[string]config.BackendConfig{
 			"test": {
 				Name:      "Test",
 				ModelsDir: "",

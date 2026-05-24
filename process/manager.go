@@ -1,4 +1,4 @@
-package main
+package process
 
 import (
 	"bufio"
@@ -9,104 +9,47 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"sd-studio-server/config"
 )
 
-const ringBufferSize = 100
-
-type RingBuffer struct {
-	mu     sync.RWMutex
-	lines  []string
-	size   int
-	head   int
-	count  int
-}
-
-func NewRingBuffer(size int) *RingBuffer {
-	return &RingBuffer{
-		lines: make([]string, size),
-		size:  size,
-	}
-}
-
-func (r *RingBuffer) Write(line string) {
-	r.mu.Lock()
-	r.lines[r.head] = line
-	r.head = (r.head + 1) % r.size
-	if r.count < r.size {
-		r.count++
-	}
-	r.mu.Unlock()
-}
-
-func (r *RingBuffer) Lines(n int) []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if n > r.count {
-		n = r.count
-	}
-	result := make([]string, 0, n)
-	start := r.head - n
-	if start < 0 {
-		start += r.size
-	}
-	for i := 0; i < n; i++ {
-		idx := (start + i) % r.size
-		result = append(result, r.lines[idx])
-	}
-	return result
-}
-
-type ProcessStatus struct {
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	PID       int       `json:"pid,omitempty"`
-	StartedAt time.Time `json:"started_at,omitempty"`
-	Restarts  int       `json:"restarts"`
-	Uptime    string    `json:"uptime,omitempty"`
-}
-
-type ManagedProcess struct {
-	Config        ProcessConfig
-	Cmd           *exec.Cmd
-	PID           int
-	Status        string
-	StartedAt     time.Time
-	Restarts      int
-	InstallFailed bool
-	Managed       bool
-	cancelFunc    context.CancelFunc
-	logBuf        *RingBuffer
+type Installer interface {
+	EnsureInstalled(key, binary string) error
+	PreStartForge()
 }
 
 type ProcessManager struct {
-	mu        sync.RWMutex
+	Mu        sync.RWMutex
 	processes map[string]*ManagedProcess
-	installer *Installer
+	installer Installer
+	dataDir   string
 	OnChange  func()
 }
 
-func NewProcessManager(cfg *Config, inst *Installer) *ProcessManager {
+func NewProcessManager(cfg *config.Config, inst Installer, dataDir string) *ProcessManager {
 	pm := &ProcessManager{
 		processes: make(map[string]*ManagedProcess),
 		installer: inst,
+		dataDir:   dataDir,
 	}
 	for key, pc := range cfg.Processes {
 		pm.processes[key] = &ManagedProcess{
 			Config: pc,
 			Status: "stopped",
-			logBuf: NewRingBuffer(ringBufferSize),
+			LogBuf: NewRingBuffer(RingBufferSize),
 		}
 	}
 	return pm
 }
 
 func (pm *ProcessManager) StartAll() {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.Mu.RLock()
+	defer pm.Mu.RUnlock()
 	for name, mp := range pm.processes {
 		if mp.Config.AutoStart {
 			go pm.start(name)
@@ -115,9 +58,9 @@ func (pm *ProcessManager) StartAll() {
 }
 
 func (pm *ProcessManager) Start(name string) error {
-	pm.mu.RLock()
+	pm.Mu.RLock()
 	_, ok := pm.processes[name]
-	pm.mu.RUnlock()
+	pm.Mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("process %q not found", name)
 	}
@@ -125,21 +68,20 @@ func (pm *ProcessManager) Start(name string) error {
 }
 
 func (pm *ProcessManager) start(name string) error {
-	pm.mu.Lock()
+	pm.Mu.Lock()
 	mp, ok := pm.processes[name]
 	if !ok {
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		return fmt.Errorf("process %q not found", name)
 	}
 	if mp.Status == "running" || mp.Status == "starting" {
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		return fmt.Errorf("process %q is already %s", name, mp.Status)
 	}
 
 	mp.Status = "starting"
-	pm.mu.Unlock()
+	pm.Mu.Unlock()
 
-	// Check if the service is already running before starting a new instance
 	if mp.Config.HealthURL != "" {
 		hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
 		hreq, _ := http.NewRequestWithContext(hctx, http.MethodGet, mp.Config.HealthURL, nil)
@@ -148,12 +90,12 @@ func (pm *ProcessManager) start(name string) error {
 		if herr == nil {
 			hresp.Body.Close()
 			if hresp.StatusCode == http.StatusOK {
-				pm.mu.Lock()
+				pm.Mu.Lock()
 				mp.Status = "running"
 				mp.StartedAt = time.Now()
-				mp.logBuf.Write("already running (health check passed, skipped start)")
+				mp.LogBuf.Write("already running (health check passed, skipped start)")
 				pm.processes[name] = mp
-				pm.mu.Unlock()
+				pm.Mu.Unlock()
 				log.Printf("[%s] already running (health check passed)", name)
 				pm.notifyChange()
 				return nil
@@ -167,26 +109,24 @@ func (pm *ProcessManager) start(name string) error {
 
 	if pm.installer != nil && !mp.InstallFailed {
 		if err := pm.installer.EnsureInstalled(name, mp.Config.Binary); err != nil {
-			pm.mu.Lock()
+			pm.Mu.Lock()
 			mp.Status = "crashed"
 			mp.InstallFailed = true
-			mp.logBuf.Write(fmt.Sprintf("auto-install failed: %v", err))
+			mp.LogBuf.Write(fmt.Sprintf("auto-install failed: %v", err))
 			pm.processes[name] = mp
-			pm.mu.Unlock()
+			pm.Mu.Unlock()
 			log.Printf("[%s] auto-install failed: %v", name, err)
 			return fmt.Errorf("auto-install %q: %w", name, err)
 		}
 	}
 
-	// Resolve binary path for pip-installed tools (e.g. rembg → {DataDir}/python/bin/rembg)
 	if mp.Config.Binary != "" && !strings.ContainsRune(mp.Config.Binary, '/') && !strings.ContainsRune(mp.Config.Binary, os.PathSeparator) {
-		resolved := findBinary(pm.installer.config.DataDir, mp.Config.Binary)
+		resolved := FindBinary(pm.dataDir, mp.Config.Binary)
 		if resolved != "" {
 			mp.Config.Binary = resolved
 		}
 	}
 
-	// On Windows, append .exe to absolute binary paths without extension
 	if runtime.GOOS == "windows" && mp.Config.Binary != "" && !strings.HasSuffix(mp.Config.Binary, ".exe") {
 		exePath := mp.Config.Binary + ".exe"
 		if _, err := os.Stat(exePath); err == nil {
@@ -205,25 +145,25 @@ func (pm *ProcessManager) start(name string) error {
 		cmd.Env = append(cmd.Environ(), envSlice(mp.Config.Env)...)
 	}
 
-	setPlatformProcAttr(cmd)
+	SetPlatformProcAttr(cmd)
 
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
 
 	mp.Cmd = cmd
-	mp.cancelFunc = cancel
-	mp.logBuf = NewRingBuffer(ringBufferSize)
+	mp.CancelFunc = cancel
+	mp.LogBuf = NewRingBuffer(RingBufferSize)
 
-	pm.mu.Lock()
+	pm.Mu.Lock()
 	pm.processes[name] = mp
-	pm.mu.Unlock()
+	pm.Mu.Unlock()
 
 	if err := cmd.Start(); err != nil {
-		pm.mu.Lock()
+		pm.Mu.Lock()
 		mp.Status = "crashed"
-		mp.logBuf.Write(fmt.Sprintf("failed to start: %v (binary=%s workdir=%s)", err, mp.Config.Binary, mp.Config.WorkDir))
+		mp.LogBuf.Write(fmt.Sprintf("failed to start: %v (binary=%s workdir=%s)", err, mp.Config.Binary, mp.Config.WorkDir))
 		pm.processes[name] = mp
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		cancel()
 		return fmt.Errorf("start %q: %w (binary=%s)", name, err, mp.Config.Binary)
 	}
@@ -233,18 +173,16 @@ func (pm *ProcessManager) start(name string) error {
 	mp.Status = "starting"
 	mp.Managed = true
 
-	pm.mu.Lock()
+	pm.Mu.Lock()
 	pm.processes[name] = mp
-	pm.mu.Unlock()
+	pm.Mu.Unlock()
 
 	log.Printf("[%s] started (pid=%d binary=%s workdir=%s)", name, mp.PID, mp.Config.Binary, mp.Config.WorkDir)
 	pm.notifyChange()
 
-	// Pipe stdout/stderr to ring buffer and server stdout
-	go pipeLogs(stdout, mp.logBuf, name)
-	go pipeLogs(stderr, mp.logBuf, name)
+	go pipeLogs(stdout, mp.LogBuf, name)
+	go pipeLogs(stderr, mp.LogBuf, name)
 
-	// Wait for health check, then mark as running
 	go func() {
 		if mp.Config.HealthURL != "" {
 			log.Printf("[%s] waiting for healthy response from %s ...", name, mp.Config.HealthURL)
@@ -263,24 +201,23 @@ func (pm *ProcessManager) start(name string) error {
 			}
 		}
 
-		pm.mu.Lock()
+		pm.Mu.Lock()
 		mp.Status = "running"
 		pm.processes[name] = mp
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		log.Printf("[%s] healthy", name)
 		pm.notifyChange()
 	}()
 
-	// Wait for process exit
 	go func() {
 		err := cmd.Wait()
-		pm.mu.Lock()
+		pm.Mu.Lock()
 		mp.Status = "crashed"
 		if err != nil {
-			mp.logBuf.Write(fmt.Sprintf("process exited: %v", err))
+			mp.LogBuf.Write(fmt.Sprintf("process exited: %v", err))
 		}
 		pm.processes[name] = mp
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		pm.notifyChange()
 	}()
 
@@ -297,19 +234,19 @@ func pipeLogs(r io.Reader, buf *RingBuffer, name string) {
 }
 
 func (pm *ProcessManager) Stop(name string) error {
-	pm.mu.Lock()
+	pm.Mu.Lock()
 	mp, ok := pm.processes[name]
 	if !ok {
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		return fmt.Errorf("process %q not found", name)
 	}
 	if mp.Status != "running" && mp.Status != "starting" {
-		pm.mu.Unlock()
+		pm.Mu.Unlock()
 		return nil
 	}
-	pm.mu.Unlock()
+	pm.Mu.Unlock()
 
-	err := platformKill(mp)
+	err := PlatformKill(mp)
 	pm.notifyChange()
 	return err
 }
@@ -319,27 +256,27 @@ func (pm *ProcessManager) Restart(name string) error {
 		return err
 	}
 
-	pm.mu.Lock()
+	pm.Mu.Lock()
 	mp := pm.processes[name]
 	mp.Restarts = 0
 	pm.processes[name] = mp
-	pm.mu.Unlock()
+	pm.Mu.Unlock()
 
 	return pm.Start(name)
 }
 
 func (pm *ProcessManager) Status() map[string]ProcessStatus {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.Mu.RLock()
+	defer pm.Mu.RUnlock()
 
 	result := make(map[string]ProcessStatus, len(pm.processes))
 	for name, mp := range pm.processes {
 		ps := ProcessStatus{
-			Name:     mp.Config.Name,
-			Status:   mp.Status,
-			PID:      mp.PID,
+			Name:      mp.Config.Name,
+			Status:    mp.Status,
+			PID:       mp.PID,
 			StartedAt: mp.StartedAt,
-			Restarts: mp.Restarts,
+			Restarts:  mp.Restarts,
 		}
 		if !mp.StartedAt.IsZero() && mp.Status == "running" {
 			ps.Uptime = time.Since(mp.StartedAt).Truncate(time.Second).String()
@@ -350,18 +287,18 @@ func (pm *ProcessManager) Status() map[string]ProcessStatus {
 }
 
 func (pm *ProcessManager) Logs(name string, lines int) ([]string, error) {
-	pm.mu.RLock()
+	pm.Mu.RLock()
 	mp, ok := pm.processes[name]
-	pm.mu.RUnlock()
+	pm.Mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("process %q not found", name)
 	}
-	return mp.logBuf.Lines(lines), nil
+	return mp.LogBuf.Lines(lines), nil
 }
 
 func (pm *ProcessManager) Get(name string) (*ManagedProcess, bool) {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.Mu.RLock()
+	defer pm.Mu.RUnlock()
 	mp, ok := pm.processes[name]
 	return mp, ok
 }
@@ -375,7 +312,7 @@ func (pm *ProcessManager) Watch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pm.mu.RLock()
+			pm.Mu.RLock()
 			for name, mp := range pm.processes {
 				if mp.Status == "crashed" && mp.Config.Restart && mp.Restarts < mp.Config.MaxRestart {
 					if !mp.StartedAt.IsZero() && time.Since(mp.StartedAt) < 5*time.Second {
@@ -385,36 +322,36 @@ func (pm *ProcessManager) Watch(ctx context.Context) {
 					delay := backoffDuration(mp.Restarts)
 					go func(n string, m *ManagedProcess) {
 						time.Sleep(delay)
-						pm.mu.Lock()
+						pm.Mu.Lock()
 						m.Restarts++
 						pm.processes[n] = m
-						pm.mu.Unlock()
+						pm.Mu.Unlock()
 						pm.start(n)
 						pm.notifyChange()
 					}(name, mp)
 				}
 			}
-			pm.mu.RUnlock()
+			pm.Mu.RUnlock()
 		}
 	}
 }
 
 func (pm *ProcessManager) StopAll() {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
+	pm.Mu.RLock()
+	defer pm.Mu.RUnlock()
 	for name, mp := range pm.processes {
 		if name == "ollama" {
 			continue
 		}
 		if mp.Status == "running" || mp.Status == "starting" {
-			platformKill(mp)
+			PlatformKill(mp)
 		}
 	}
 }
 
 func (pm *ProcessManager) UpdateProcessConfig(name string, binary string, args []string, workdir string) {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	pm.Mu.Lock()
+	defer pm.Mu.Unlock()
 	mp, ok := pm.processes[name]
 	if !ok {
 		return
@@ -447,23 +384,32 @@ func (pm *ProcessManager) notifyChange() {
 	}
 }
 
-type LogCapture struct {
-	buf *RingBuffer
-}
-
-func NewLogCapture(size int) *LogCapture {
-	return &LogCapture{buf: NewRingBuffer(size)}
-}
-
-func (lc *LogCapture) Write(p []byte) (int, error) {
-	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
-		if line != "" {
-			lc.buf.Write(line)
+func FindBinary(dataDir, name string) string {
+	if runtime.GOOS == "windows" {
+		for _, dir := range []string{
+			filepath.Join(dataDir, "python", "Scripts"),
+			filepath.Join(dataDir, "python"),
+			filepath.Join(dataDir, "bin"),
+		} {
+			candidate := filepath.Join(dir, name+".exe")
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
+		}
+	} else {
+		for _, dir := range []string{
+			filepath.Join(dataDir, "python", "bin"),
+			filepath.Join(dataDir, "bin"),
+		} {
+			candidate := filepath.Join(dir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate
+			}
 		}
 	}
-	return len(p), nil
-}
-
-func (lc *LogCapture) Lines(n int) []string {
-	return lc.buf.Lines(n)
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path
+	}
+	return ""
 }

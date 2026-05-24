@@ -16,7 +16,14 @@ import (
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 
+	"sd-studio-server/api"
+	"sd-studio-server/config"
+	sdgpu "sd-studio-server/gpu"
 	"sd-studio-server/gpuproxy"
+	sdhealth "sd-studio-server/health"
+	"sd-studio-server/installer"
+	"sd-studio-server/models"
+	"sd-studio-server/process"
 	"sd-studio-server/tui"
 )
 
@@ -29,7 +36,7 @@ func main() {
 
 	dir := *dataDir
 	if dir == "" {
-		dir = defaultDataDir()
+		dir = config.DefaultDataDir()
 	}
 	dir, _ = filepath.Abs(dir)
 
@@ -45,7 +52,7 @@ func main() {
 		log.Fatalf("Failed to create data directory %s: %v", dir, err)
 	}
 
-	cfg, err := LoadWithDir(cfgFile, dir)
+	cfg, err := config.LoadWithDir(cfgFile, dir)
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
@@ -64,27 +71,31 @@ func main() {
 	}
 }
 
-func runHeadless(cfg *Config) {
-	log.Printf("SD Studio Server starting on port %d (backend: %s)", cfg.Port, cfg.ActiveSD)
-	log.Printf("Data directory: %s", cfg.DataDir)
+type appDeps struct {
+	cfg      *config.Config
+	inst     *installer.Installer
+	pm       *process.ProcessManager
+	hm       *sdhealth.HealthMonitor
+	gm       *sdgpu.GPUMonitor
+	gpuProxy *gpuproxy.Proxy
+	mux      *http.ServeMux
+}
 
-	inst := NewInstaller(cfg)
+func initApp(cfg *config.Config) *appDeps {
+	gpuOpt := sdgpu.NewOptimizerAdapter()
+	cfg.ApplyBackendToProcess(gpuOpt)
+	cfg.ApplyProxyPorts(log.Printf)
+
+	inst := installer.NewInstaller(cfg)
 	inst.EnsurePythonBasePackages()
-	pm := NewProcessManager(cfg, inst)
+	pm := process.NewProcessManager(cfg, inst, cfg.DataDir)
 	proxy := NewProxyHandler(pm, cfg)
-	hm := NewHealthMonitor(cfg)
-	gm := NewGPUMonitor()
-	mm := NewModelManager(cfg)
+	hm := sdhealth.NewHealthMonitor(cfg)
+	gm := sdgpu.NewGPUMonitor()
+	mm := models.NewModelManager(cfg)
 	bm := NewBackendManager(cfg)
 	handlers := NewHandlers(pm, hm, gm, cfg, inst)
-
 	mux := setupMux(handlers, inst, mm, bm, proxy)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	inst.EnsureAllInstalled()
-	ensureOllamaBinary(cfg, inst)
 
 	var gpuProxy *gpuproxy.Proxy
 	if cfg.Proxy.Enabled {
@@ -94,25 +105,63 @@ func runHeadless(cfg *Config) {
 		}
 	}
 
-	pm.StartAll()
+	return &appDeps{
+		cfg: cfg, inst: inst, pm: pm, hm: hm, gm: gm,
+		gpuProxy: gpuProxy, mux: mux,
+	}
+}
 
-	go pm.Watch(ctx)
-	go hm.Start(ctx)
-	go gm.Start(ctx)
+func (d *appDeps) startMonitors(ctx context.Context) {
+	go d.pm.Watch(ctx)
+	go d.hm.Start(ctx)
+	go d.gm.Start(ctx)
+}
 
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      corsMiddleware(mux),
+func (d *appDeps) ensureInstalled() {
+	d.inst.EnsureAllInstalled()
+	ensureOllamaBinary(d.cfg, d.inst)
+}
+
+func (d *appDeps) newServer() *http.Server {
+	return &http.Server{
+		Addr:         fmt.Sprintf(":%d", d.cfg.Port),
+		Handler:      corsMiddleware(d.mux),
 		ReadTimeout:  0,
 		WriteTimeout: 0,
 	}
+}
 
-	mdns := NewMDNS(cfg.Port, cfg.MDNS)
+func (d *appDeps) registerMDNS() *MDNSService {
+	mdns := NewMDNS(d.cfg.Port, d.cfg.MDNS)
 	if err := mdns.Register(); err != nil {
 		log.Printf("mDNS registration failed (non-fatal): %v", err)
-	} else if cfg.MDNS {
-		log.Printf("mDNS: registered _sd-studio._tcp on port %d", cfg.Port)
+	} else if d.cfg.MDNS {
+		log.Printf("mDNS: registered _sd-studio._tcp on port %d", d.cfg.Port)
 	}
+	return mdns
+}
+
+func (d *appDeps) shutdown() {
+	if d.gpuProxy != nil {
+		d.gpuProxy.Stop()
+	}
+	d.pm.StopAll()
+}
+
+func runHeadless(cfg *config.Config) {
+	log.Printf("SD Studio Server starting on port %d (backend: %s)", cfg.Port, cfg.ActiveSD)
+	log.Printf("Data directory: %s", cfg.DataDir)
+
+	d := initApp(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	d.ensureInstalled()
+	d.pm.StartAll()
+	d.startMonitors(ctx)
+
+	srv := d.newServer()
+	mdns := d.registerMDNS()
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -125,11 +174,8 @@ func runHeadless(cfg *Config) {
 
 		cancel()
 		srv.Shutdown(shutdownCtx)
-		if gpuProxy != nil {
-			gpuProxy.Stop()
-		}
+		d.shutdown()
 		mdns.Shutdown()
-		pm.StopAll()
 
 		log.Println("Server stopped")
 		os.Exit(0)
@@ -141,8 +187,8 @@ func runHeadless(cfg *Config) {
 	}
 }
 
-func runTUI(cfg *Config, cfgFile string, firstRun bool) {
-	logCapture := NewLogCapture(300)
+func runTUI(cfg *config.Config, cfgFile string, firstRun bool) {
+	logCapture := process.NewLogCapture(300)
 	log.SetOutput(logCapture)
 
 	if firstRun {
@@ -155,22 +201,23 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 			log.Fatalf("Failed to create data directory: %v", err)
 		}
 
-		freshCfg := newDefaultConfig()
+		freshCfg := config.NewDefault()
 		freshCfg.DataDir = result.DataDir
 
 		for key, active := range result.Components {
 			if !active {
 				if proc, ok := freshCfg.Processes[key]; ok {
 					proc.AutoStart = false
-					proc.Install = InstallConfig{}
+					proc.Install = config.InstallConfig{}
 					freshCfg.Processes[key] = proc
 				}
 			}
 		}
 
-		freshCfg.applyBackendToProcess()
-		freshCfg.applyInstallDefaults()
-		freshCfg.resolvePaths()
+		gpuOpt := sdgpu.NewOptimizerAdapter()
+		freshCfg.ApplyBackendToProcess(gpuOpt)
+		freshCfg.ApplyInstallDefaults()
+		freshCfg.ResolvePaths()
 
 		if err := saveConfig(cfgFile, &freshCfg); err != nil {
 			log.Fatalf("Failed to save config: %v", err)
@@ -179,38 +226,18 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		*cfg = freshCfg
 	}
 
-	inst := NewInstaller(cfg)
-	inst.EnsurePythonBasePackages()
-	pm := NewProcessManager(cfg, inst)
-	proxy := NewProxyHandler(pm, cfg)
-	hm := NewHealthMonitor(cfg)
-	gm := NewGPUMonitor()
-	mm := NewModelManager(cfg)
-	bm := NewBackendManager(cfg)
-	handlers := NewHandlers(pm, hm, gm, cfg, inst)
-
-	mux := setupMux(handlers, inst, mm, bm, proxy)
-
+	d := initApp(cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var gpuProxy *gpuproxy.Proxy
-	if cfg.Proxy.Enabled {
-		gpuProxy = gpuproxy.New(cfg.Proxy)
-		if err := gpuProxy.Start(); err != nil {
-			log.Fatalf("GPU proxy start failed: %v", err)
-		}
-	}
-
 	deps := tui.ServerDeps{
-		Port:         cfg.Port,
-		DataDir:      cfg.DataDir,
+		Port:    cfg.Port,
+		DataDir: cfg.DataDir,
 		EnsureAllInstalled: func() {
-			inst.EnsureAllInstalled()
-			ensureOllamaBinary(cfg, inst)
+			d.ensureInstalled()
 		},
 		InstallStatus: func() map[string]tui.ComponentInstallStatus {
-			statuses := inst.Status()
+			statuses := d.inst.Status()
 			result := make(map[string]tui.ComponentInstallStatus, len(statuses))
 			for k, s := range statuses {
 				result[k] = tui.ComponentInstallStatus{
@@ -224,16 +251,14 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 			return result
 		},
 		StartAll: func() {
-			pm.StartAll()
+			d.pm.StartAll()
 		},
 		StartMonitors: func() {
-			go pm.Watch(ctx)
-			go hm.Start(ctx)
-			go gm.Start(ctx)
+			d.startMonitors(ctx)
 		},
 		ProcStatus: func() map[string]tui.ServiceInfo {
-			statuses := pm.Status()
-			healthResults := hm.Results()
+			statuses := d.pm.Status()
+			healthResults := d.hm.Results()
 			result := make(map[string]tui.ServiceInfo, len(statuses))
 			for k, ps := range statuses {
 				si := tui.ServiceInfo{
@@ -251,23 +276,23 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 			return result
 		},
 		StartProc: func(name string) error {
-			return pm.Start(name)
+			return d.pm.Start(name)
 		},
 		StopProc: func(name string) error {
-			return pm.Stop(name)
+			return d.pm.Stop(name)
 		},
 		RestartProc: func(name string) error {
-			return pm.Restart(name)
+			return d.pm.Restart(name)
 		},
 		ProcLogs: func(name string, lines int) []string {
-			logs, err := pm.Logs(name, lines)
+			logs, err := d.pm.Logs(name, lines)
 			if err != nil {
 				return nil
 			}
 			return logs
 		},
 		GPUInfo: func() tui.GPUInfo {
-			info := gm.Info()
+			info := d.gm.Info()
 			return tui.GPUInfo{
 				Name:        info.Name,
 				MemoryTotal: info.MemoryTotal,
@@ -277,7 +302,7 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 			}
 		},
 		HealthResults: func() map[string]tui.HealthResult {
-			results := hm.Results()
+			results := d.hm.Results()
 			out := make(map[string]tui.HealthResult, len(results))
 			for k, v := range results {
 				out[k] = tui.HealthResult{
@@ -289,22 +314,22 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 			return out
 		},
 		ServerLogs: func() []string {
-				return logCapture.Lines(100)
-			},
+			return logCapture.Lines(100)
+		},
 	}
 
 	model := tui.NewAppModel(deps)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
-	inst.OnProgress = func(key, progress string) {
+	d.inst.OnProgress = func(key, progress string) {
 		p.Send(tui.InstallProgressMsg(key, progress))
 	}
 
-	pm.OnChange = func() {
+	d.pm.OnChange = func() {
 		p.Send(tui.ServicesChangeMsg{})
 	}
 
-	gm.OnUpdate = func(info GPUInfo) {
+	d.gm.OnUpdate = func(info sdgpu.GPUInfo) {
 		p.Send(tui.GPUUpdateMsgFunc(tui.GPUInfo{
 			Name:        info.Name,
 			MemoryTotal: info.MemoryTotal,
@@ -314,12 +339,7 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		}))
 	}
 
-	srv := &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Port),
-		Handler:      corsMiddleware(mux),
-		ReadTimeout:  0,
-		WriteTimeout: 0,
-	}
+	srv := d.newServer()
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -332,16 +352,10 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		srv.Shutdown(shutdownCtx)
-		if gpuProxy != nil {
-			gpuProxy.Stop()
-		}
-		pm.StopAll()
+		d.shutdown()
 	}()
 
-	mdns := NewMDNS(cfg.Port, cfg.MDNS)
-	if err := mdns.Register(); err != nil {
-		log.Printf("mDNS registration failed (non-fatal): %v", err)
-	}
+	mdns := d.registerMDNS()
 
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("TUI error: %v", err)
@@ -353,15 +367,12 @@ func runTUI(cfg *Config, cfgFile string, firstRun bool) {
 	}()
 
 	cancel()
-	pm.StopAll()
-	if gpuProxy != nil {
-		gpuProxy.Stop()
-	}
+	d.shutdown()
 	mdns.Shutdown()
 	os.Exit(0)
 }
 
-func saveConfig(path string, cfg *Config) error {
+func saveConfig(path string, cfg *config.Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
@@ -370,7 +381,7 @@ func saveConfig(path string, cfg *Config) error {
 	return os.WriteFile(path, append(header, data...), 0644)
 }
 
-func setupMux(handlers *Handlers, inst *Installer, mm *ModelManager, bm *BackendManager, proxy *ProxyHandler) *http.ServeMux {
+func setupMux(handlers *Handlers, inst *installer.Installer, mm *models.ModelManager, bm *BackendManager, proxy *ProxyHandler) *http.ServeMux {
 	mux := http.NewServeMux()
 	handlers.RegisterRoutes(mux)
 	mm.RegisterRoutes(mux)
@@ -384,7 +395,7 @@ func setupMux(handlers *Handlers, inst *Installer, mm *ModelManager, bm *Backend
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			writeJSON(w, map[string]interface{}{
+			api.WriteJSON(w, map[string]interface{}{
 				"name":    "SD Studio Server",
 				"version": "1.0",
 				"status":  "running",
@@ -410,9 +421,9 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func ensureOllamaBinary(cfg *Config, inst *Installer) {
+func ensureOllamaBinary(cfg *config.Config, inst *installer.Installer) {
 	if ollamaPath := inst.EnsureOllama(); ollamaPath != "" {
-		pm := &ProcessConfig{}
+		pm := &config.ProcessConfig{}
 		for key, pc := range cfg.Processes {
 			if key == "ollama" {
 				pm = &pc

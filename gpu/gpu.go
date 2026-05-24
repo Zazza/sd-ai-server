@@ -1,4 +1,4 @@
-package main
+package gpu
 
 import (
 	"context"
@@ -9,15 +9,17 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"sd-studio-server/config"
 )
 
 type GPUInfo struct {
-	Name       string  `json:"name,omitempty"`
+	Name        string `json:"name,omitempty"`
 	MemoryTotal int    `json:"memory_total_mb,omitempty"`
 	MemoryUsed  int    `json:"memory_used_mb,omitempty"`
 	MemoryFree  int    `json:"memory_free_mb,omitempty"`
 	Utilization int    `json:"utilization_percent,omitempty"`
-	Available   bool    `json:"available"`
+	Available   bool   `json:"available"`
 }
 
 type GPUMonitor struct {
@@ -32,7 +34,6 @@ func NewGPUMonitor() *GPUMonitor {
 		binary: "nvidia-smi",
 	}
 
-	// On Windows, nvidia-smi is typically in a specific path
 	if runtime.GOOS == "windows" {
 		if path := os.Getenv("ProgramFiles"); path != "" {
 			candidate := path + `\NVIDIA Corporation\NVSMI\nvidia-smi.exe`
@@ -49,7 +50,6 @@ func (gm *GPUMonitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	// Initial check
 	gm.poll()
 
 	for {
@@ -84,7 +84,6 @@ func (gm *GPUMonitor) poll() {
 		return
 	}
 
-	// Parse CSV: name, memory_total, memory_used, memory_free, utilization
 	fields := strings.Split(line, ",")
 	if len(fields) < 5 {
 		return
@@ -128,7 +127,6 @@ func checkXformersCompat(pythonBinary, workDir string) bool {
 	if pythonBinary == "" {
 		return false
 	}
-	// PyTorch 2.0+ has native scaled_dot_product_attention — xformers not needed
 	cmd := exec.Command(pythonBinary, "-c",
 		"import torch; v=tuple(int(x) for x in torch.__version__.split('+')[0].split('.')[:2]); "+
 			"print('native' if v>=(2,0) else 'legacy')",
@@ -141,6 +139,27 @@ func checkXformersCompat(pythonBinary, workDir string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(out)) == "legacy"
+}
+
+var _ config.GPUOptimizer = (*OptimizerAdapter)(nil)
+
+type OptimizerAdapter struct{}
+
+func NewOptimizerAdapter() *OptimizerAdapter {
+	return &OptimizerAdapter{}
+}
+
+func (g *OptimizerAdapter) DetectGPU() int {
+	gm := NewGPUMonitor()
+	return gm.Detect().MemoryTotal
+}
+
+func (g *OptimizerAdapter) CheckXformersCompat(binary, workDir string) bool {
+	return checkXformersCompat(binary, workDir)
+}
+
+func (g *OptimizerAdapter) ForgeArgsForVRAM(vramMB int, xformers bool) []string {
+	return forgeArgsForVRAM(vramMB, xformers)
 }
 
 func forgeArgsForVRAM(vramMB int, useXformers bool) []string {

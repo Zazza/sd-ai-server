@@ -7,17 +7,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"sd-studio-server/api"
+	"sd-studio-server/config"
+	sdgpu "sd-studio-server/gpu"
+	sdhealth "sd-studio-server/health"
+	"sd-studio-server/installer"
+	"sd-studio-server/process"
 )
 
 type Handlers struct {
-	manager   *ProcessManager
-	health    *HealthMonitor
-	gpu       *GPUMonitor
-	config    *Config
-	installer *Installer
+	manager   *process.ProcessManager
+	health    *sdhealth.HealthMonitor
+	gpu       *sdgpu.GPUMonitor
+	config    *config.Config
+	installer *installer.Installer
 }
 
-func NewHandlers(pm *ProcessManager, hm *HealthMonitor, gm *GPUMonitor, cfg *Config, inst *Installer) *Handlers {
+func NewHandlers(pm *process.ProcessManager, hm *sdhealth.HealthMonitor, gm *sdgpu.GPUMonitor, cfg *config.Config, inst *installer.Installer) *Handlers {
 	return &Handlers{
 		manager:   pm,
 		health:    hm,
@@ -71,11 +78,11 @@ func (h *Handlers) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.Start(name); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		api.WriteError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "started", "process": name})
+	api.WriteJSON(w, map[string]string{"status": "started", "process": name})
 }
 
 func (h *Handlers) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -91,11 +98,11 @@ func (h *Handlers) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.Stop(name); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		api.WriteError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "stopped", "process": name})
+	api.WriteJSON(w, map[string]string{"status": "stopped", "process": name})
 }
 
 func (h *Handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -111,11 +118,11 @@ func (h *Handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.manager.Restart(name); err != nil {
-		writeError(w, err.Error(), http.StatusInternalServerError)
+		api.WriteError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	writeJSON(w, map[string]string{"status": "restarted", "process": name})
+	api.WriteJSON(w, map[string]string{"status": "restarted", "process": name})
 }
 
 func (h *Handlers) handleLogs(w http.ResponseWriter, r *http.Request) {
@@ -140,11 +147,11 @@ func (h *Handlers) handleLogs(w http.ResponseWriter, r *http.Request) {
 
 	logs, err := h.manager.Logs(name, lines)
 	if err != nil {
-		writeError(w, err.Error(), http.StatusNotFound)
+		api.WriteError(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
+	api.WriteJSON(w, map[string]interface{}{
 		"process": name,
 		"lines":   lines,
 		"logs":    logs,
@@ -204,15 +211,4 @@ func (h *Handlers) fetchOllamaRunningModels(client *http.Client, baseURL string)
 		names = append(names, m.Name)
 	}
 	return names
-}
-
-func writeJSON(w http.ResponseWriter, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
-}
-
-func writeError(w http.ResponseWriter, msg string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }

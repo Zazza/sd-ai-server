@@ -2,13 +2,16 @@ package main
 
 import (
 	"net/http"
+
+	"sd-studio-server/api"
+	"sd-studio-server/config"
 )
 
 type BackendManager struct {
-	config *Config
+	config *config.Config
 }
 
-func NewBackendManager(cfg *Config) *BackendManager {
+func NewBackendManager(cfg *config.Config) *BackendManager {
 	return &BackendManager{config: cfg}
 }
 
@@ -24,11 +27,11 @@ func (bm *BackendManager) handleActive(w http.ResponseWriter, r *http.Request) {
 
 	backend := bm.config.GetActiveBackend()
 	if backend == nil {
-		writeError(w, "no active backend", http.StatusNotFound)
+		api.WriteError(w, "no active backend", http.StatusNotFound)
 		return
 	}
 
-	writeJSON(w, map[string]interface{}{
+	api.WriteJSON(w, map[string]interface{}{
 		"key":     bm.config.ActiveSD,
 		"name":    backend.Name,
 		"process": backend.ProcessKey,

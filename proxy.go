@@ -7,15 +7,18 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+
+	"sd-studio-server/config"
+	"sd-studio-server/process"
 )
 
 type ProxyHandler struct {
 	mu      sync.RWMutex
 	routes  map[string]*httputil.ReverseProxy
-	manager *ProcessManager
+	manager *process.ProcessManager
 }
 
-func NewProxyHandler(pm *ProcessManager, cfg *Config) *ProxyHandler {
+func NewProxyHandler(pm *process.ProcessManager, cfg *config.Config) *ProxyHandler {
 	ph := &ProxyHandler{
 		routes:  make(map[string]*httputil.ReverseProxy),
 		manager: pm,

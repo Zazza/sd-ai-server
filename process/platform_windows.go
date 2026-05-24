@@ -1,6 +1,6 @@
 //go:build windows
 
-package main
+package process
 
 import (
 	"os/exec"
@@ -9,15 +9,15 @@ import (
 	"time"
 )
 
-func setPlatformProcAttr(cmd *exec.Cmd) {
+func SetPlatformProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP,
 	}
 }
 
-func platformKill(mp *ManagedProcess) error {
-	if mp.cancelFunc != nil {
-		mp.cancelFunc()
+func PlatformKill(mp *ManagedProcess) error {
+	if mp.CancelFunc != nil {
+		mp.CancelFunc()
 	}
 
 	if mp.PID > 0 {

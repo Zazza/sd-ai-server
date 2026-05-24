@@ -1,20 +1,20 @@
 //go:build !windows
 
-package main
+package process
 
 import (
+	"os/exec"
 	"syscall"
 	"time"
-	"os/exec"
 )
 
-func setPlatformProcAttr(cmd *exec.Cmd) {
+func SetPlatformProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-func platformKill(mp *ManagedProcess) error {
-	if mp.cancelFunc != nil {
-		mp.cancelFunc()
+func PlatformKill(mp *ManagedProcess) error {
+	if mp.CancelFunc != nil {
+		mp.CancelFunc()
 	}
 
 	if mp.PID > 0 {
