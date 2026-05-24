@@ -152,7 +152,17 @@ func (pm *ProcessManager) start(name string) error {
 
 	mp.Cmd = cmd
 	mp.CancelFunc = cancel
-	mp.LogBuf = NewRingBuffer(RingBufferSize)
+	mp.LogBuf.Write(fmt.Sprintf("--- process restarted at %s ---", time.Now().Format("2006-01-02 15:04:05")))
+
+	if pm.installer != nil && pm.dataDir != "" {
+		logsDir := filepath.Join(pm.dataDir, "logs")
+		os.MkdirAll(logsDir, 0o755)
+		logPath := filepath.Join(logsDir, name+".log")
+		if mp.LogFile != nil {
+			mp.LogFile.Close()
+		}
+		mp.LogFile, _ = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	}
 
 	pm.Mu.Lock()
 	pm.processes[name] = mp
@@ -180,8 +190,8 @@ func (pm *ProcessManager) start(name string) error {
 	log.Printf("[%s] started (pid=%d binary=%s workdir=%s)", name, mp.PID, mp.Config.Binary, mp.Config.WorkDir)
 	pm.notifyChange()
 
-	go pipeLogs(stdout, mp.LogBuf, name)
-	go pipeLogs(stderr, mp.LogBuf, name)
+	go pipeLogs(stdout, mp.LogBuf, mp.LogFile, name)
+	go pipeLogs(stderr, mp.LogBuf, mp.LogFile, name)
 
 	go func() {
 		if mp.Config.HealthURL != "" {
@@ -211,6 +221,9 @@ func (pm *ProcessManager) start(name string) error {
 
 	go func() {
 		err := cmd.Wait()
+		if mp.LogFile != nil {
+			mp.LogFile.Close()
+		}
 		pm.Mu.Lock()
 		mp.Status = "crashed"
 		if err != nil {
@@ -224,12 +237,15 @@ func (pm *ProcessManager) start(name string) error {
 	return nil
 }
 
-func pipeLogs(r io.Reader, buf *RingBuffer, name string) {
+func pipeLogs(r io.Reader, buf *RingBuffer, logFile *os.File, name string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
 		buf.Write(line)
 		log.Printf("[%s] %s", name, line)
+		if logFile != nil {
+			logFile.WriteString(time.Now().Format("2006-01-02 15:04:05") + " " + line + "\n")
+		}
 	}
 }
 
@@ -277,6 +293,7 @@ func (pm *ProcessManager) Status() map[string]ProcessStatus {
 			PID:       mp.PID,
 			StartedAt: mp.StartedAt,
 			Restarts:  mp.Restarts,
+			Category:  mp.Config.Category,
 		}
 		if !mp.StartedAt.IsZero() && mp.Status == "running" {
 			ps.Uptime = time.Since(mp.StartedAt).Truncate(time.Second).String()

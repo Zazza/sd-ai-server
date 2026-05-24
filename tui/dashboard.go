@@ -184,7 +184,7 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		keys := m.serviceKeys()
+		svcKeys := m.serviceOnlyKeys()
 		switch msg.String() {
 		case "q":
 			return m, func() tea.Msg { return quitMsg{} }
@@ -202,16 +202,16 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(keys)-1 {
+			if m.cursor < len(svcKeys)-1 {
 				m.cursor++
 			}
 		case "r":
-			if m.cursor < len(keys) {
-				go m.deps.RestartProc(keys[m.cursor])
+			if m.cursor < len(svcKeys) {
+				go m.deps.RestartProc(svcKeys[m.cursor])
 			}
 		case "s":
-			if m.cursor < len(keys) {
-				name := keys[m.cursor]
+			if m.cursor < len(svcKeys) {
+				name := svcKeys[m.cursor]
 				info := m.services[name]
 				if info.Status == "running" {
 					go m.deps.StopProc(name)
@@ -220,8 +220,8 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "l":
-			if m.cursor < len(keys) {
-				name := keys[m.cursor]
+			if m.cursor < len(svcKeys) {
+				name := svcKeys[m.cursor]
 				m.showLogs = true
 				m.logKey = name
 				m.logOffset = 0
@@ -246,6 +246,7 @@ func (m *DashboardModel) refreshServices() {
 			Status: ps.Status,
 			PID:    ps.PID,
 			Uptime: ps.Uptime,
+			Category: ps.Category,
 		}
 		if hr, ok := healthResults[k]; ok {
 			si.Healthy = hr.Healthy
@@ -271,6 +272,17 @@ func (m DashboardModel) serviceKeys() []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func (m DashboardModel) serviceOnlyKeys() []string {
+	keys := m.serviceKeys()
+	filtered := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if m.services[k].Category != "utility" {
+			filtered = append(filtered, k)
+		}
+	}
+	return filtered
 }
 
 func (m DashboardModel) visibleLogLines() int {
@@ -430,12 +442,17 @@ func (m DashboardModel) viewDashboard() string {
 	lines = append(lines, subtitleStyle.Render("SERVICES"))
 
 	keys := m.serviceKeys()
-	for i, key := range keys {
+	cursorIdx := 0
+	for _, key := range keys {
 		si := m.services[key]
+		if si.Category == "utility" {
+			continue
+		}
 		cursor := " "
-		if i == m.cursor {
+		if cursorIdx == m.cursor {
 			cursor = selectedStyle.Render(">")
 		}
+		cursorIdx++
 
 		var statusIcon, statusText string
 		switch si.Status {
@@ -455,6 +472,26 @@ func (m DashboardModel) viewDashboard() string {
 		}
 
 		line := fmt.Sprintf("%s %s %-28s %s", cursor, statusIcon, si.Name, statusText)
+		lines = append(lines, line)
+	}
+
+	// Utilities
+	lines = append(lines, sep(w))
+	lines = append(lines, subtitleStyle.Render("UTILITIES"))
+	for _, key := range keys {
+		si := m.services[key]
+		if si.Category != "utility" || key == "python" {
+			continue
+		}
+		installStatus := stoppedStyle.Render("not installed")
+		installs := m.deps.InstallStatus()
+		if is, ok := installs[key]; ok && is.Installed {
+			installStatus = runningStyle.Render("installed")
+			if is.Version != "" {
+				installStatus += fmt.Sprintf(" v%s", is.Version)
+			}
+		}
+		line := fmt.Sprintf("  %s %-28s %s", stoppedStyle.Render("-"), si.Name, installStatus)
 		lines = append(lines, line)
 	}
 

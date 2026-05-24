@@ -262,6 +262,7 @@ func runTUI(cfg *config.Config, cfgFile string, firstRun bool) {
 					Installing: s.Installing,
 					Progress:   s.Progress,
 					Error:      s.Error,
+					Version:    s.Version,
 				}
 			}
 			return result
@@ -278,10 +279,11 @@ func runTUI(cfg *config.Config, cfgFile string, firstRun bool) {
 			result := make(map[string]tui.ServiceInfo, len(statuses))
 			for k, ps := range statuses {
 				si := tui.ServiceInfo{
-					Name:   ps.Name,
-					Status: ps.Status,
-					PID:    ps.PID,
-					Uptime: ps.Uptime,
+					Name:     ps.Name,
+					Status:   ps.Status,
+					PID:      ps.PID,
+					Uptime:   ps.Uptime,
+					Category: ps.Category,
 				}
 				if hr, ok := healthResults[k]; ok {
 					si.Healthy = hr.Healthy

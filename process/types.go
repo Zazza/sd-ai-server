@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"time"
 
@@ -15,6 +16,7 @@ type ProcessStatus struct {
 	StartedAt time.Time `json:"started_at,omitempty"`
 	Restarts  int       `json:"restarts"`
 	Uptime    string    `json:"uptime,omitempty"`
+	Category  string    `json:"category,omitempty"`
 }
 
 type ManagedProcess struct {
@@ -28,4 +30,5 @@ type ManagedProcess struct {
 	Managed       bool
 	CancelFunc    context.CancelFunc
 	LogBuf        *RingBuffer
+	LogFile       *os.File
 }

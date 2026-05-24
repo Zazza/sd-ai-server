@@ -45,6 +45,7 @@ type ProcessConfig struct {
 	Restart    bool              `yaml:"restart"`
 	MaxRestart int               `yaml:"max_restart"`
 	Install    InstallConfig     `yaml:"install"`
+	Category   string            `yaml:"category"`
 }
 
 type BackendConfig struct {

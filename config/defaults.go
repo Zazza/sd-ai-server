@@ -80,6 +80,7 @@ func NewDefault() Config {
 			"python": {
 				Name:      "Python 3.10",
 				AutoStart: false,
+				Category:  "utility",
 			},
 			"sd": {
 				Name:       "Stable Diffusion",
@@ -122,6 +123,7 @@ func NewDefault() Config {
 				AutoStart:  false,
 				Restart:    true,
 				MaxRestart: 3,
+				Category:   "utility",
 				Install: InstallConfig{
 					Method: InstallPip,
 					URL:    "rembg",

@@ -20,6 +20,7 @@ type InstallStatus struct {
 	Installing bool   `json:"installing"`
 	Progress   string `json:"progress"`
 	Error      string `json:"error,omitempty"`
+	Version    string `json:"version,omitempty"`
 }
 
 type Installer struct {
@@ -50,6 +51,9 @@ func NewInstaller(cfg *config.Config) *Installer {
 		if bc.Install.Method != "" {
 			s := &InstallStatus{Key: key}
 			s.Installed = inst.checkInstalled(bc.Install)
+			if s.Installed {
+				s.Version = bc.Install.Version
+			}
 			inst.statuses[key] = s
 			inst.logs[key] = process.NewRingBuffer(process.RingBufferSize)
 		}
@@ -62,6 +66,9 @@ func NewInstaller(cfg *config.Config) *Installer {
 			}
 			s := &InstallStatus{Key: key}
 			s.Installed = inst.checkInstalled(pc.Install)
+			if s.Installed {
+					s.Version = pc.Install.Version
+				}
 			inst.statuses[key] = s
 			inst.logs[key] = process.NewRingBuffer(process.RingBufferSize)
 		}
@@ -187,6 +194,7 @@ func (inst *Installer) Install(key string) error {
 	} else {
 		s.Installed = true
 		s.Progress = "done"
+		s.Version = ic.Version
 	}
 	inst.statuses[key] = s
 	inst.mu.Unlock()

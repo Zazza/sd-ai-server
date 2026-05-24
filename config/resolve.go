@@ -24,6 +24,9 @@ func (c *Config) MergeProcessEnvDefaults() {
 				curProc.Env[k] = v
 			}
 		}
+		if curProc.Category == "" && defProc.Category != "" {
+			curProc.Category = defProc.Category
+		}
 		c.Processes[key] = curProc
 	}
 }

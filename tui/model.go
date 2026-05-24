@@ -36,15 +36,17 @@ type ComponentInstallStatus struct {
 	Installing bool
 	Progress   string
 	Error      string
+	Version    string
 }
 
 type ServiceInfo struct {
-	Name    string
-	Status  string
-	PID     int
-	Uptime  string
-	Healthy bool
-	Latency int64
+	Name     string
+	Status   string
+	PID      int
+	Uptime   string
+	Healthy  bool
+	Latency  int64
+	Category string
 }
 
 type GPUInfo struct {
