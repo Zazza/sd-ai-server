@@ -154,7 +154,7 @@ func forgeArgsForVRAM(vramMB int, useXformers bool) []string {
 	case vramMB < 6000:
 		return append(base, "--lowvram")
 	case vramMB < 8192:
-		return append(base, "--medvram")
+		return append(base, "--medvram-sdxl")
 	default:
 		return base
 	}
