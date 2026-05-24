@@ -33,7 +33,7 @@ func newTestProxy(t *testing.T, ollamaBackend, sdBackend *httptest.Server) *Prox
 		StudioHeader: "X-SD-Studio",
 	}
 
-	return New(cfg)
+	return New(cfg, nil)
 }
 
 func TestProxy_ForwardRequest(t *testing.T) {

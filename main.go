@@ -81,6 +81,22 @@ type appDeps struct {
 	mux      *http.ServeMux
 }
 
+type gpuMonitorAdapter struct {
+	*sdgpu.GPUMonitor
+}
+
+func (a *gpuMonitorAdapter) Info() gpuproxy.GPUInfo {
+	gi := a.GPUMonitor.Info()
+	return gpuproxy.GPUInfo{
+		Name:        gi.Name,
+		MemoryTotal: gi.MemoryTotal,
+		MemoryFree:  gi.MemoryFree,
+		MemoryUsed:  gi.MemoryUsed,
+		Utilization: gi.Utilization,
+		Available:   gi.Available,
+	}
+}
+
 func initApp(cfg *config.Config) *appDeps {
 	gpuOpt := sdgpu.NewOptimizerAdapter()
 	cfg.ApplyBackendToProcess(gpuOpt)
@@ -99,7 +115,7 @@ func initApp(cfg *config.Config) *appDeps {
 
 	var gpuProxy *gpuproxy.Proxy
 	if cfg.Proxy.Enabled {
-		gpuProxy = gpuproxy.New(cfg.Proxy)
+		gpuProxy = gpuproxy.New(cfg.Proxy, &gpuMonitorAdapter{gm})
 		if err := gpuProxy.Start(); err != nil {
 			log.Fatalf("GPU proxy start failed: %v", err)
 		}

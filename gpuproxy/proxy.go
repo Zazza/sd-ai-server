@@ -7,7 +7,21 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
+
+type GPUInfoer interface {
+	Info() GPUInfo
+}
+
+type GPUInfo struct {
+	Name        string
+	MemoryTotal int
+	MemoryFree  int
+	MemoryUsed  int
+	Utilization int
+	Available   bool
+}
 
 type Stats struct {
 	Queue   QueueStats       `json:"queue"`
@@ -22,25 +36,27 @@ type EndpointStatus struct {
 }
 
 type Proxy struct {
-	config   Config
-	queue    *PriorityQueue
-	handlers map[string]*handler
-	servers  []*http.Server
-	addrs    map[string]string
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	config      Config
+	queue       *PriorityQueue
+	handlers    map[string]*handler
+	servers     []*http.Server
+	addrs       map[string]string
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	gpuMonitor  GPUInfoer
 }
 
-func New(cfg Config) *Proxy {
+func New(cfg Config, gpuMonitor GPUInfoer) *Proxy {
 	if cfg.GPUSlots < 1 {
 		cfg.GPUSlots = 1
 	}
 	return &Proxy{
-		config:   cfg,
-		queue:    NewPriorityQueue(cfg.GPUSlots),
-		handlers: make(map[string]*handler),
-		servers:  make([]*http.Server, 0),
-		addrs:    make(map[string]string),
+		config:     cfg,
+		queue:      NewPriorityQueue(cfg.GPUSlots),
+		handlers:   make(map[string]*handler),
+		servers:    make([]*http.Server, 0),
+		addrs:      make(map[string]string),
+		gpuMonitor: gpuMonitor,
 	}
 }
 
@@ -132,5 +148,33 @@ func (p *Proxy) dispatch(ctx context.Context) {
 		close(req.Proceed)
 		<-req.Complete
 		p.queue.Release()
+		p.waitForVRAM(ctx)
+	}
+}
+
+func (p *Proxy) waitForVRAM(ctx context.Context) {
+	if p.gpuMonitor == nil {
+		return
+	}
+	deadline := time.After(30 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		info := p.gpuMonitor.Info()
+		if !info.Available || info.MemoryTotal == 0 {
+			return
+		}
+		if info.MemoryFree*100/info.MemoryTotal >= 50 {
+			return
+		}
+		log.Printf("[gpuproxy] VRAM cooldown: %d/%d MB free, waiting...", info.MemoryFree, info.MemoryTotal)
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline:
+			log.Printf("[gpuproxy] VRAM cooldown timeout, proceeding")
+			return
+		case <-ticker.C:
+		}
 	}
 }
