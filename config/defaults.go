@@ -115,8 +115,8 @@ func NewDefault() Config {
 			},
 			"rembg": {
 				Name:       "Rembg",
-				Binary:     "rembg",
-				Args:       []string{"s", "--host", "0.0.0.0", "--port", "7000"},
+				Binary:     DefaultForgeBinary(),
+				Args:       []string{"-m", "rembg", "s", "--host", "0.0.0.0", "--port", "7000"},
 				HealthURL:  "http://localhost:7000/api",
 				TargetURL:  "http://localhost:7000",
 				ProxyPath:  "/api/rembg/",
