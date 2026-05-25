@@ -120,7 +120,7 @@ func NewDefault() Config {
 				HealthURL:  "http://localhost:7000/api",
 				TargetURL:  "http://localhost:7000",
 				ProxyPath:  "/api/rembg/",
-				AutoStart:  false,
+				AutoStart:  true,
 				Restart:    true,
 				MaxRestart: 3,
 				Category:   "utility",

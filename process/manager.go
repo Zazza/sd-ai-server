@@ -124,6 +124,18 @@ func (pm *ProcessManager) start(name string) error {
 		resolved := FindBinary(pm.dataDir, mp.Config.Binary)
 		if resolved != "" {
 			mp.Config.Binary = resolved
+			if mp.Config.Env == nil {
+				mp.Config.Env = make(map[string]string)
+			}
+			pythonDir := filepath.Join(pm.dataDir, "python")
+			pythonBinDir := pythonScriptsDir(pythonDir)
+			if _, err := os.Stat(pythonBinDir); err == nil {
+				if existing, ok := mp.Config.Env["PATH"]; ok {
+					mp.Config.Env["PATH"] = pythonBinDir + string(os.PathListSeparator) + existing
+				} else {
+					mp.Config.Env["PATH"] = pythonBinDir + string(os.PathListSeparator) + os.Getenv("PATH")
+				}
+			}
 		}
 	}
 
@@ -399,6 +411,13 @@ func (pm *ProcessManager) notifyChange() {
 	if pm.OnChange != nil {
 		pm.OnChange()
 	}
+}
+
+func pythonScriptsDir(pythonDir string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(pythonDir, "Scripts")
+	}
+	return filepath.Join(pythonDir, "bin")
 }
 
 func FindBinary(dataDir, name string) string {
