@@ -156,15 +156,15 @@ func (p *Proxy) waitForVRAM(ctx context.Context) {
 	if p.gpuMonitor == nil {
 		return
 	}
-	deadline := time.After(30 * time.Second)
-	ticker := time.NewTicker(2 * time.Second)
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
 		info := p.gpuMonitor.Info()
 		if !info.Available || info.MemoryTotal == 0 {
 			return
 		}
-		if info.MemoryFree*100/info.MemoryTotal >= 50 {
+		if info.MemoryFree*100/info.MemoryTotal >= 20 {
 			return
 		}
 		log.Printf("[gpuproxy] VRAM cooldown: %d/%d MB free, waiting...", info.MemoryFree, info.MemoryTotal)
@@ -172,7 +172,6 @@ func (p *Proxy) waitForVRAM(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-deadline:
-			log.Printf("[gpuproxy] VRAM cooldown timeout, proceeding")
 			return
 		case <-ticker.C:
 		}
