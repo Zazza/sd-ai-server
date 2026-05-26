@@ -256,7 +256,17 @@ func (inst *Installer) checkInstalled(ic config.InstallConfig) bool {
 		if ic.Target == "" {
 			return false
 		}
-		return process.FindBinary(inst.config.DataDir, ic.Target) != ""
+		if process.FindBinary(inst.config.DataDir, ic.Target) == "" {
+			return false
+		}
+		pythonPath := pythonBinPath(inst.config.DataDir)
+		if _, err := os.Stat(pythonPath); err == nil {
+			cmd := exec.Command(pythonPath, "-c", "import "+ic.Target)
+			if err := cmd.Run(); err != nil {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }

@@ -302,7 +302,13 @@ func (inst *Installer) installPip(key string, ic config.InstallConfig, lb *proce
 	lb.Write(fmt.Sprintf("Installing %s via %s", pkg, pipCmd))
 	log.Printf("[%s] installing %s via %s", key, pkg, pipCmd)
 
-	cmd := exec.Command(pipPath, "install", pkg)
+	pythonPath := pythonBinPath(inst.config.DataDir)
+	var cmd *exec.Cmd
+	if _, err := os.Stat(pythonPath); err == nil {
+		cmd = exec.Command(pythonPath, "-m", "pip", "install", pkg)
+	} else {
+		cmd = exec.Command(pipPath, "install", pkg)
+	}
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
 		for _, line := range strings.Split(string(output), "\n") {

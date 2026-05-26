@@ -50,9 +50,6 @@ func findPipForDataDir(dataDir string, lb *process.RingBuffer) (string, string) 
 	}{
 		{pipBinPath(dataDir, "pip3"), "bundled pip3"},
 		{pipBinPath(dataDir, "pip"), "bundled pip"},
-		{"pip3", "pip3"},
-		{"pip", "pip"},
-		{"uv", "uv pip"},
 	}
 
 	for _, c := range candidates {
