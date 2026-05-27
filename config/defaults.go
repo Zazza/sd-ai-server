@@ -117,6 +117,9 @@ func NewDefault() Config {
 				Name:       "Rembg",
 				Binary:     DefaultForgeBinary(),
 				Args:       []string{"-m", "rembg.cli", "s", "--host", "0.0.0.0", "--port", "7000"},
+				Env: map[string]string{
+					"BROWSER": "none",
+				},
 				HealthURL:  "http://localhost:7000/api",
 				TargetURL:  "http://localhost:7000",
 				ProxyPath:  "/api/rembg/",
