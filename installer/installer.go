@@ -261,7 +261,7 @@ func (inst *Installer) checkInstalled(ic config.InstallConfig) bool {
 		}
 		pythonPath := pythonBinPath(inst.config.DataDir)
 		if _, err := os.Stat(pythonPath); err == nil {
-			cmd := exec.Command(pythonPath, "-c", "import "+ic.Target+"; from "+ic.Target+".cli import main")
+			cmd := exec.Command(pythonPath, "-c", "import "+ic.Target)
 			if err := cmd.Run(); err != nil {
 				return false
 			}
