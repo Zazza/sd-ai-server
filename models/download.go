@@ -88,13 +88,15 @@ func (m *ModelManager) handleDownloadStream(w http.ResponseWriter, r *http.Reque
 	destPath := filepath.Join(dir, filename)
 	log.Printf("[download] %s -> %s (%s)", filename, dir, installer.FormatBytes(resp.ContentLength))
 
-	f, err := os.Create(destPath)
+	tmpPath := destPath + ".downloading"
+	os.Remove(tmpPath)
+
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		fmt.Fprintf(w, "data: [ERROR] create file: %s\n\n", err.Error())
 		flusher.Flush()
 		return
 	}
-	defer f.Close()
 
 	pw := &sseProgressWriter{
 		w:        f,
@@ -106,8 +108,25 @@ func (m *ModelManager) handleDownloadStream(w http.ResponseWriter, r *http.Reque
 	}
 
 	if _, err := io.Copy(pw, resp.Body); err != nil {
-		os.Remove(destPath)
+		f.Close()
+		os.Remove(tmpPath)
 		fmt.Fprintf(w, "data: [ERROR] write file: %s\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		fmt.Fprintf(w, "data: [ERROR] sync file: %s\n\n", err.Error())
+		flusher.Flush()
+		return
+	}
+	f.Close()
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		os.Remove(tmpPath)
+		fmt.Fprintf(w, "data: [ERROR] rename file: %s\n\n", err.Error())
 		flusher.Flush()
 		return
 	}

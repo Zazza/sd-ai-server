@@ -75,15 +75,30 @@ func (m *ModelManager) DownloadModel(url, targetDir, filename string) error {
 	}
 
 	destPath := filepath.Join(targetDir, filename)
-	f, err := os.Create(destPath)
+	tmpPath := destPath + ".downloading"
+	os.Remove(tmpPath)
+
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return fmt.Errorf("create file: %w", err)
 	}
-	defer f.Close()
 
 	if _, err := io.Copy(f, resp.Body); err != nil {
-		os.Remove(destPath)
+		f.Close()
+		os.Remove(tmpPath)
 		return fmt.Errorf("write file: %w", err)
+	}
+
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("sync file: %w", err)
+	}
+	f.Close()
+
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename file: %w", err)
 	}
 
 	return nil
