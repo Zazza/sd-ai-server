@@ -369,10 +369,22 @@ func (pm *ProcessManager) StopAll() {
 	pm.Mu.RLock()
 	defer pm.Mu.RUnlock()
 	for name, mp := range pm.processes {
-		if mp.Status == "running" || mp.Status == "starting" {
-			PlatformKill(mp)
+		if mp.Status != "running" && mp.Status != "starting" {
+			continue
 		}
+		if !pm.isOurProcess(mp) {
+			log.Printf("[%s] skipping stop — system-managed process", name)
+			continue
+		}
+		PlatformKill(mp)
 	}
+}
+
+func (pm *ProcessManager) isOurProcess(mp *ManagedProcess) bool {
+	if mp.PID == 0 || mp.CancelFunc == nil {
+		return false
+	}
+	return strings.HasPrefix(mp.Config.Binary, pm.dataDir)
 }
 
 func (pm *ProcessManager) UpdateProcessConfig(name string, binary string, args []string, workdir string) {
