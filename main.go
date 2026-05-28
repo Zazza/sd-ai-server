@@ -135,7 +135,7 @@ func (d *appDeps) startMonitors(ctx context.Context) {
 
 func (d *appDeps) ensureInstalled() {
 	d.inst.EnsureAllInstalled()
-	ensureOllamaBinary(d.cfg, d.pm, d.inst)
+	ensureOllamaBinary(d.cfg, d.pm, d.inst, d.gm)
 }
 
 func (d *appDeps) newServer() *http.Server {
@@ -439,7 +439,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *installer.Installer) {
+func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *installer.Installer, gm *sdgpu.GPUMonitor) {
 	if ollamaPath := inst.EnsureOllama(); ollamaPath != "" {
 		if pc, ok := cfg.Processes["ollama"]; ok {
 			pc.Binary = ollamaPath
@@ -458,8 +458,30 @@ func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *in
 					pc.Env["LD_LIBRARY_PATH"] = libDir
 				}
 			}
+				configureOllamaGPU(&pc, gm)
 			cfg.Processes["ollama"] = pc
 			pm.UpdateProcessConfig("ollama", ollamaPath, pc.Args, pc.WorkDir)
 		}
+	}
+}
+
+func configureOllamaGPU(pc *config.ProcessConfig, gm *sdgpu.GPUMonitor) {
+	info := gm.Detect()
+	if !info.Available {
+		return
+	}
+	if info.MemoryTotal >= 24000 {
+		return
+	}
+	if pc.Env == nil {
+		pc.Env = make(map[string]string)
+	}
+	if info.MemoryTotal < 16000 {
+		pc.Env["OLLAMA_NUM_GPU"] = "0"
+		pc.Env["OLLAMA_KEEP_ALIVE"] = "5m"
+		log.Printf("[ollama] VRAM %dMB < 16GB: running on CPU to free VRAM for SD", info.MemoryTotal)
+	} else {
+		pc.Env["OLLAMA_KEEP_ALIVE"] = "5m"
+		log.Printf("[ollama] VRAM %dMB < 24GB: using shorter keep_alive to share VRAM with SD", info.MemoryTotal)
 	}
 }
