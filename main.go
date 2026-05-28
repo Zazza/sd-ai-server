@@ -443,6 +443,21 @@ func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *in
 	if ollamaPath := inst.EnsureOllama(); ollamaPath != "" {
 		if pc, ok := cfg.Processes["ollama"]; ok {
 			pc.Binary = ollamaPath
+			libDir := filepath.Join(filepath.Dir(filepath.Dir(ollamaPath)), "lib")
+			if info, err := os.Stat(libDir); err == nil && info.IsDir() {
+				if pc.Env == nil {
+					pc.Env = make(map[string]string)
+				}
+				existing := pc.Env["LD_LIBRARY_PATH"]
+				if existing == "" {
+					existing = os.Getenv("LD_LIBRARY_PATH")
+				}
+				if existing != "" {
+					pc.Env["LD_LIBRARY_PATH"] = libDir + string(os.PathListSeparator) + existing
+				} else {
+					pc.Env["LD_LIBRARY_PATH"] = libDir
+				}
+			}
 			cfg.Processes["ollama"] = pc
 			pm.UpdateProcessConfig("ollama", ollamaPath, pc.Args, pc.WorkDir)
 		}
