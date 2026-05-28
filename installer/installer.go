@@ -91,6 +91,53 @@ var installOrder = []string{"python", "forge", "ollama", "rembg"}
 
 func (inst *Installer) EnsureAllInstalled() {
 	for _, key := range installOrder {
+		if key == "ollama" {
+			if findOllamaBinary(inst.config.DataDir) != "" {
+				inst.mu.Lock()
+				if s, ok := inst.statuses[key]; ok {
+					s.Installed = true
+					s.Progress = "done"
+					inst.statuses[key] = s
+				}
+				inst.mu.Unlock()
+				log.Printf("[ollama] already installed, skipping")
+				continue
+			}
+			log.Printf("[ollama] installing...")
+			inst.mu.Lock()
+			s, ok := inst.statuses[key]
+			if !ok {
+				s = &InstallStatus{Key: key}
+				inst.statuses[key] = s
+			}
+			s.Installing = true
+			s.Progress = "installing"
+			inst.statuses[key] = s
+			inst.mu.Unlock()
+			inst.setProgress(key, "installing")
+			if path, err := inst.installOllama(); err != nil {
+				inst.mu.Lock()
+				s = inst.statuses[key]
+				s.Installing = false
+				s.Error = err.Error()
+				s.Progress = "failed"
+				inst.statuses[key] = s
+				inst.mu.Unlock()
+				inst.setProgress(key, "failed")
+				log.Printf("[ollama] install failed: %v", err)
+			} else {
+				inst.mu.Lock()
+				s = inst.statuses[key]
+				s.Installed = true
+				s.Installing = false
+				s.Progress = "done"
+				inst.statuses[key] = s
+				inst.mu.Unlock()
+				inst.setProgress(key, "done")
+				log.Printf("[ollama] installed at %s", path)
+			}
+			continue
+		}
 		ic := inst.getConfig(key)
 		if ic == nil {
 			continue

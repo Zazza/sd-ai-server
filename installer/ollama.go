@@ -62,23 +62,19 @@ func findOllamaBinary(dataDir string) string {
 	return ""
 }
 
-func (inst *Installer) EnsureOllama() string {
+func (inst *Installer) installOllama() (string, error) {
 	if p := findOllamaBinary(inst.config.DataDir); p != "" {
-		log.Printf("[ollama] found at %s", p)
-		return p
+		return p, nil
 	}
 
-	log.Printf("[ollama] not found, installing...")
 	lb := process.NewRingBuffer(50)
-
 	if err := inst.installOllamaSystem(lb); err != nil {
 		for _, line := range lb.Lines(50) {
 			if line != "" {
 				log.Printf("[ollama-install] %s", line)
 			}
 		}
-		log.Printf("[ollama] install failed: %v", err)
-		return ""
+		return "", err
 	}
 
 	for _, line := range lb.Lines(50) {
@@ -87,9 +83,17 @@ func (inst *Installer) EnsureOllama() string {
 		}
 	}
 
-	p := findOllamaBinary(inst.config.DataDir)
+	return findOllamaBinary(inst.config.DataDir), nil
+}
+
+func (inst *Installer) EnsureOllama() string {
+	p, err := inst.installOllama()
+	if err != nil {
+		log.Printf("[ollama] install failed: %v", err)
+		return ""
+	}
 	if p != "" {
-		log.Printf("[ollama] installed at %s", p)
+		log.Printf("[ollama] found at %s", p)
 	}
 	return p
 }
