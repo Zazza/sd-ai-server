@@ -369,9 +369,6 @@ func (pm *ProcessManager) StopAll() {
 	pm.Mu.RLock()
 	defer pm.Mu.RUnlock()
 	for name, mp := range pm.processes {
-		if name == "ollama" {
-			continue
-		}
 		if mp.Status == "running" || mp.Status == "starting" {
 			PlatformKill(mp)
 		}
