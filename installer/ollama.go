@@ -209,6 +209,7 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 		target += ".exe"
 	}
 
+	inst.setProgress("ollama", "downloading")
 	lb.Write(fmt.Sprintf("Downloading Ollama (%s/%s)...", goos, arch))
 	log.Printf("[ollama] downloading %s -> %s", url, target)
 
@@ -229,12 +230,23 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
-	size, err := io.Copy(tmpFile, resp.Body)
+	pw := &progressWriter{
+		w:        tmpFile,
+		total:    resp.ContentLength,
+		key:      "ollama",
+		target:   target,
+		lastLog:  0,
+		lastTime: 0,
+		inst:     inst,
+		lb:       lb,
+	}
+	size, err := io.Copy(pw, resp.Body)
 	tmpFile.Close()
 	if err != nil {
 		return fmt.Errorf("save download: %w", err)
 	}
 
+	inst.setProgress("ollama", "extracting")
 	lb.Write(fmt.Sprintf("Downloaded %s, extracting...", FormatBytes(size)))
 
 	targetDir := filepath.Dir(target)
@@ -258,6 +270,7 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 		return fmt.Errorf("chmod: %w", err)
 	}
 
+	inst.setProgress("ollama", "done")
 	lb.Write("Ollama installed successfully")
 	log.Printf("[ollama] installed to %s", target)
 	return nil
