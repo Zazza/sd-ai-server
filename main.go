@@ -135,7 +135,7 @@ func (d *appDeps) startMonitors(ctx context.Context) {
 
 func (d *appDeps) ensureInstalled() {
 	d.inst.EnsureAllInstalled()
-	ensureOllamaBinary(d.cfg, d.inst)
+	ensureOllamaBinary(d.cfg, d.pm, d.inst)
 }
 
 func (d *appDeps) newServer() *http.Server {
@@ -439,18 +439,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func ensureOllamaBinary(cfg *config.Config, inst *installer.Installer) {
+func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *installer.Installer) {
 	if ollamaPath := inst.EnsureOllama(); ollamaPath != "" {
-		pm := &config.ProcessConfig{}
-		for key, pc := range cfg.Processes {
-			if key == "ollama" {
-				pm = &pc
-				break
-			}
+		if pc, ok := cfg.Processes["ollama"]; ok {
+			pc.Binary = ollamaPath
+			cfg.Processes["ollama"] = pc
 		}
-		if pm != nil {
-			pm.Binary = ollamaPath
-			cfg.Processes["ollama"] = *pm
-		}
+		pm.UpdateProcessConfig("ollama", ollamaPath, nil, "")
 	}
 }
