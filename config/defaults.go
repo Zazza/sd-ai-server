@@ -104,9 +104,9 @@ func NewDefault() Config {
 				Args:       []string{"serve"},
 				Env: map[string]string{
 					"OLLAMA_MODELS":       "models/ollama",
-					"OLLAMA_KEEP_ALIVE":   "24h",
+					"OLLAMA_KEEP_ALIVE":   "5m",
 					"OLLAMA_NUM_PARALLEL": "2",
-					"OLLAMA_NUM_GPU":      "-1",
+					"OLLAMA_NUM_GPU":      "0",
 					"OLLAMA_DEBUG":        "1",
 				},
 				HealthURL:  "http://localhost:11434/api/tags",
