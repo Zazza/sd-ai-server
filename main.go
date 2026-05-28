@@ -444,7 +444,7 @@ func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *in
 		if pc, ok := cfg.Processes["ollama"]; ok {
 			pc.Binary = ollamaPath
 			cfg.Processes["ollama"] = pc
+			pm.UpdateProcessConfig("ollama", ollamaPath, pc.Args, pc.WorkDir)
 		}
-		pm.UpdateProcessConfig("ollama", ollamaPath, nil, "")
 	}
 }
