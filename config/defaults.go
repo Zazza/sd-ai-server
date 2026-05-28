@@ -103,6 +103,7 @@ func NewDefault() Config {
 				Binary:     "ollama",
 				Args:       []string{"serve"},
 				Env: map[string]string{
+					"OLLAMA_HOST":         "0.0.0.0:11434",
 					"OLLAMA_MODELS":       "models/ollama",
 					"OLLAMA_KEEP_ALIVE":   "24h",
 					"OLLAMA_NUM_PARALLEL": "2",
