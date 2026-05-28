@@ -91,7 +91,11 @@ func NewDefault() Config {
 				Restart:    true,
 				MaxRestart: 5,
 				Env: map[string]string{
-					"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+					"PYTORCH_CUDA_ALLOC_CONF":         "expandable_segments:True",
+					"GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+					"GIT_CONFIG_COUNT":                "1",
+					"GIT_CONFIG_KEY_0":                "safe.directory",
+					"GIT_CONFIG_VALUE_0":              "*",
 				},
 			},
 			"ollama": {
