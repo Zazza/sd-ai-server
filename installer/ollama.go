@@ -21,7 +21,7 @@ func findOllamaBinary(dataDir string) string {
 		if runtime.GOOS == "windows" {
 			binName = "ollama.exe"
 		}
-		p := filepath.Join(dataDir, "ollama", binName)
+		p := filepath.Join(dataDir, "ollama", "bin", binName)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
@@ -204,14 +204,11 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 		ext = ".tar.zst"
 	}
 	url := fmt.Sprintf("https://ollama.com/download/ollama-%s-%s%s", goos, arch, ext)
-	target := filepath.Join(inst.config.DataDir, "ollama", "ollama")
-	if runtime.GOOS == "windows" {
-		target += ".exe"
-	}
+	targetDir := filepath.Join(inst.config.DataDir, "ollama")
 
 	inst.setProgress("ollama", "downloading")
 	lb.Write(fmt.Sprintf("Downloading Ollama (%s/%s)...", goos, arch))
-	log.Printf("[ollama] downloading %s -> %s", url, target)
+	log.Printf("[ollama] downloading %s -> %s", url, targetDir)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -234,7 +231,7 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 		w:        tmpFile,
 		total:    resp.ContentLength,
 		key:      "ollama",
-		target:   target,
+		target:   targetDir,
 		lastLog:  0,
 		lastTime: 0,
 		inst:     inst,
@@ -249,16 +246,15 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 	inst.setProgress("ollama", "extracting")
 	lb.Write(fmt.Sprintf("Downloaded %s, extracting...", FormatBytes(size)))
 
-	targetDir := filepath.Dir(target)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("create target dir: %w", err)
 	}
 
 	switch {
 	case strings.HasSuffix(ext, ".tar.zst"):
-		err = extractBinaryFromTarZst(tmpPath, "ollama", target, lb)
+		err = extractOllamaTarZst(tmpPath, targetDir, lb)
 	case strings.HasSuffix(ext, ".tgz"):
-		err = extractBinaryFromTgz(tmpPath, "ollama", target, lb)
+		err = extractOllamaTgz(tmpPath, targetDir, lb)
 	default:
 		return fmt.Errorf("unsupported archive format: %s", ext)
 	}
@@ -266,12 +262,31 @@ func (inst *Installer) downloadOllamaBinary(lb *process.RingBuffer, goos string)
 		return fmt.Errorf("extract: %w", err)
 	}
 
-	if err := os.Chmod(target, 0755); err != nil {
+	binName := "ollama"
+	if runtime.GOOS == "windows" {
+		binName = "ollama.exe"
+	}
+	if err := os.Chmod(filepath.Join(targetDir, "bin", binName), 0755); err != nil {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
 	inst.setProgress("ollama", "done")
 	lb.Write("Ollama installed successfully")
-	log.Printf("[ollama] installed to %s", target)
+	log.Printf("[ollama] installed to %s", targetDir)
 	return nil
+}
+
+func extractOllamaTarZst(archivePath, targetDir string, lb *process.RingBuffer) error {
+	cmd := exec.Command("tar", "-I", "zstd", "-xf", archivePath, "-C", targetDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		cmd = exec.Command("tar", "--zstd", "-xf", archivePath, "-C", targetDir)
+		if output2, err2 := cmd.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("tar extract (tried -I zstd and --zstd): %s; %s: %w", strings.TrimSpace(string(output)), strings.TrimSpace(string(output2)), err2)
+		}
+	}
+	return nil
+}
+
+func extractOllamaTgz(archivePath, targetDir string, lb *process.RingBuffer) error {
+	return extractTgz(archivePath, targetDir)
 }
