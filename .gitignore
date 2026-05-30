@@ -1,0 +1,9 @@
+sd-studio-server
+*.db
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.claude/
+CLAUDE.md
+.mcp.json

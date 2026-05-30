@@ -1,0 +1,10 @@
+services:
+  sd-studio-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./server-config.yaml:/app/server-config.yaml
+    environment:
+      - PORT=8080
