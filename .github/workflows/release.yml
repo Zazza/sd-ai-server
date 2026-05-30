@@ -38,10 +38,16 @@ jobs:
           [ "$GOOS" = "windows" ] && output="${output}.exe"
           go build -ldflags "-s -w -X main.version=${VERSION#v}" -o "$output" .
       - name: Package
+        env:
+          GOOS: ${{ matrix.goos }}
         run: |
           name=sd-studio-server-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}
           mkdir "$name"
-          cp sd-studio-server* "$name/"
+          if [ "$GOOS" = "windows" ]; then
+            mv sd-studio-server.exe "$name/sd-studio-server.exe"
+          else
+            mv sd-studio-server "$name/sd-studio-server"
+          fi
           cp server-config.yaml README.md "$name/"
           tar czf "${name}.tar.gz" "$name"
       - uses: softprops/action-gh-release@v2
