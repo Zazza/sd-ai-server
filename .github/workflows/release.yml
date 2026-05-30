@@ -11,10 +11,16 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
           - goos: darwin
             goarch: arm64
           - goos: windows
             goarch: amd64
+          - goos: windows
+            goarch: arm64
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +31,18 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
           VERSION: ${{ github.ref_name }}
         run: |
           output=sd-studio-server
           [ "$GOOS" = "windows" ] && output="${output}.exe"
-          go build -ldflags "-X main.version=${VERSION#v}" -o "$output" .
+          go build -ldflags "-s -w -X main.version=${VERSION#v}" -o "$output" .
       - name: Package
         run: |
           name=sd-studio-server-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}
           mkdir "$name"
           cp sd-studio-server* "$name/"
-          cp server-config.yaml "$name/"
+          cp server-config.yaml README.md "$name/"
           tar czf "${name}.tar.gz" "$name"
       - uses: softprops/action-gh-release@v2
         with:
