@@ -65,6 +65,7 @@ func (inst *Installer) installZip(key string, ic config.InstallConfig, lb *proce
 	}
 
 	if key == "forge" {
+		inst.EnsureGit()
 		ensureForgeVenv(inst.config.DataDir, target, lb)
 		preInstallForgeDeps(inst.config.DataDir, target, lb)
 	}
@@ -278,6 +279,7 @@ func (inst *Installer) installTgz(key string, ic config.InstallConfig, lb *proce
 	}
 
 	if key == "forge" {
+		inst.EnsureGit()
 		ensureForgeVenv(inst.config.DataDir, target, lb)
 		preInstallForgeDeps(inst.config.DataDir, target, lb)
 	}

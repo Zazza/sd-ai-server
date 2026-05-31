@@ -124,19 +124,18 @@ func (pm *ProcessManager) start(name string) error {
 		resolved := FindBinary(pm.dataDir, mp.Config.Binary)
 		if resolved != "" {
 			mp.Config.Binary = resolved
-			if mp.Config.Env == nil {
-				mp.Config.Env = make(map[string]string)
-			}
-			pythonDir := filepath.Join(pm.dataDir, "python")
-			pythonBinDir := pythonScriptsDir(pythonDir)
-			if _, err := os.Stat(pythonBinDir); err == nil {
-				if existing, ok := mp.Config.Env["PATH"]; ok {
-					mp.Config.Env["PATH"] = pythonBinDir + string(os.PathListSeparator) + existing
-				} else {
-					mp.Config.Env["PATH"] = pythonBinDir + string(os.PathListSeparator) + os.Getenv("PATH")
-				}
-			}
 		}
+	}
+
+	if mp.Config.Env == nil {
+		mp.Config.Env = make(map[string]string)
+	}
+	for _, dir := range pm.toolPathDirs() {
+		existing := os.Getenv("PATH")
+		if e, ok := mp.Config.Env["PATH"]; ok {
+			existing = e
+		}
+		mp.Config.Env["PATH"] = dir + string(os.PathListSeparator) + existing
 	}
 
 	if runtime.GOOS == "windows" && mp.Config.Binary != "" && !strings.HasSuffix(mp.Config.Binary, ".exe") {
@@ -427,6 +426,26 @@ func pythonScriptsDir(pythonDir string) string {
 		return filepath.Join(pythonDir, "Scripts")
 	}
 	return filepath.Join(pythonDir, "bin")
+}
+
+func (pm *ProcessManager) toolPathDirs() []string {
+	var dirs []string
+	pythonDir := filepath.Join(pm.dataDir, "python")
+	pythonBinDir := pythonScriptsDir(pythonDir)
+	if _, err := os.Stat(pythonBinDir); err == nil {
+		dirs = append(dirs, pythonBinDir)
+	}
+	binDir := filepath.Join(pm.dataDir, "bin")
+	if _, err := os.Stat(binDir); err == nil {
+		dirs = append(dirs, binDir)
+	}
+	if runtime.GOOS == "windows" {
+		gitCmdDir := filepath.Join(pm.dataDir, "git", "cmd")
+		if _, err := os.Stat(gitCmdDir); err == nil {
+			dirs = append(dirs, gitCmdDir)
+		}
+	}
+	return dirs
 }
 
 func FindBinary(dataDir, name string) string {

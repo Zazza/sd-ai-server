@@ -325,6 +325,7 @@ func (inst *Installer) PreStartForge() {
 	if _, err := os.Stat(forgeDir); err != nil {
 		return
 	}
+	inst.EnsureGit()
 	lb := process.NewRingBuffer(50)
 	preInstallForgeDeps(inst.config.DataDir, forgeDir, lb)
 	for _, line := range lb.Lines(50) {
