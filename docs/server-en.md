@@ -2,7 +2,7 @@
 
 # SD Studio Server
 
-Standalone Go service that orchestrates all AI components — Stable Diffusion WebUI, Ollama, Rembg — with installation, lifecycle management, health monitoring, GPU optimization, and a terminal dashboard.
+Standalone Go service that orchestrates all AI components — Stable Diffusion WebUI, Ollama — with installation, lifecycle management, health monitoring, GPU optimization, and a terminal dashboard.
 
 ## Overview
 
@@ -52,7 +52,7 @@ docker compose up --build
 ```
 
 On first run, the setup wizard guides you through:
-- Selecting which components to install (SD WebUI, Ollama, Rembg)
+- Selecting which components to install (SD WebUI, Ollama)
 - Choosing data directory
 - Configuring GPU backend (Forge / A1111)
 
@@ -61,9 +61,29 @@ On first run, the setup wizard guides you through:
 | Mode | Command | Description |
 |------|---------|-------------|
 | TUI (interactive) | `./sd-studio-server` | Terminal dashboard with real-time service status and controls |
+| Attach (remote) | `./sd-studio-server attach [host[:port]]` | Connect a TUI dashboard to a running daemon (default `127.0.0.1:8080`) |
 | Headless | `./sd-studio-server --headless` | Log output only, no TUI — for servers and Docker |
 | Custom port | `./sd-studio-server --port 9090` | Override HTTP API port |
 | Custom config | `./sd-studio-server --config path.yaml` | Use specific config file |
+
+### Attach Mode
+
+`attach` connects an interactive TUI dashboard to an **already running** daemon
+(typically `--headless` under systemd) over its REST API — e.g. from a desktop:
+
+```bash
+./sd-studio-server attach 192.168.1.184        # port 8080 by default
+./sd-studio-server attach 192.168.1.184:8080
+```
+
+- Same dashboard as local TUI: services, health, GPU/VRAM, GPU queue line and
+  management screen (`g`: priorities, cancel/release), process logs (`l`),
+  start/stop/restart (`s`/`r`)
+- CPU/RAM bars show the **daemon host** (`sys` block of `/api/server/status`)
+- Polls every 3s; on connection loss the last snapshot freezes and a yellow
+  `reconnecting` banner appears (backoff up to 30s) — the client never exits on its own
+- `q` / Ctrl+C exits the **client only**; the daemon keeps running
+- Requires a TTY on stdin; unreachable daemon → immediate error, exit 1
 
 ## Configuration
 
@@ -75,6 +95,15 @@ data_dir: ~/sd-studio-server
 active_sd: forge
 mdns: true
 detected_vram_mb: 8192
+
+gpu:
+  total_budget_mb: 0        # 0 = auto: detected_vram_mb - reserve_mb; result <= 0 disables the queue
+  reserve_mb: 500           # reserved for OS/driver (auto mode only)
+  max_wait_seconds: 120     # bounded wait for budget -> 503 + Retry-After
+  lease_ttl_seconds: 90     # lease TTL without heartbeat
+  sd_default_weight_mb: 11000   # SD job weight when checkpoint unknown
+  sd_overhead_mb: 4500      # weight = checkpoint file size + this overhead
+  llm_weight_mb: 11000      # LLM generation weight (qwen-14b)
 
 processes:
   python:
@@ -103,18 +132,6 @@ processes:
     autostart: true
     restart: true
     max_restart: 5
-
-  rembg:
-    name: "Rembg"
-    binary: "rembg"
-    args: ["s", "--host", "0.0.0.0", "--port", "7000"]
-    health_url: "http://localhost:7000/api"
-    target_url: "http://localhost:7000"
-    proxy_path: "/api/rembg/"
-    autostart: false
-    restart: true
-    max_restart: 3
-    category: utility
 
 backends:
   forge:
@@ -244,7 +261,6 @@ Automated installation of all components.
 
 - Downloads and extracts SD WebUI Forge
 - Installs Python 3.10 standalone (platform-specific)
-- Installs Rembg via pip
 - Ensures Ollama binary is available
 - Progress reporting via callbacks
 - Installation status tracking
@@ -282,8 +298,7 @@ Returns status of all managed processes:
 {
   "processes": {
     "sd": { "name": "Stable Diffusion", "status": "running", "pid": 12345, "uptime": "2h30m" },
-    "ollama": { "name": "Ollama", "status": "running", "pid": 12340, "uptime": "2h30m" },
-    "rembg": { "name": "Rembg", "status": "stopped" }
+    "ollama": { "name": "Ollama", "status": "running", "pid": 12340, "uptime": "2h30m" }
   }
 }
 ```
@@ -299,8 +314,10 @@ GET  /api/server/logs/{name}?lines=100
 
 ### GPU Info
 
+GPU info is part of the server status response (`"gpu"` field):
+
 ```
-GET /api/gpu
+GET /api/server/status
 ```
 
 ```json
@@ -340,8 +357,58 @@ GET /api/health                 # Health check results for all services
 ```
 /api/sd/*    → Stable Diffusion WebUI
 /api/llm/*   → Ollama / LLM service
-/api/rembg/* → Rembg service
 ```
+
+## GPU Queue
+
+### Overview
+
+`gpuqueue` serializes GPU-heavy work across services (SD, LLM, external workers)
+via a weighted VRAM budget: a job runs only when free budget ≥ its weight,
+otherwise it waits in a FIFO queue (with manual priority). Protects against
+VRAM thrash/OOM when Forge, Ollama and yue-worker load models concurrently.
+
+- **Weighted admission**: heavy proxy paths acquire budget before forwarding;
+  light paths (options, progress, tags, ps) pass free
+- **Leases with TTL + heartbeat**: expired leases free the budget automatically
+  (dead-worker protection); proxy leases auto-renew
+- **fail-open**: any internal queue error = request passes + warning in status
+- **Bounded wait**: over `max_wait_seconds` → `503` + `Retry-After`
+- In-memory state: server restart = clean slate
+- GPU queue management: TUI `g` screen (local + attach)
+
+### Weights
+
+| Path | Method | Weight |
+|------|--------|--------|
+| `/api/sd/sdapi/v1/txt2img`, `img2img`, `interrogate` | POST | checkpoint file size + `sd_overhead_mb` (checkpoint tracked by sniffing `POST .../options`; unknown → `sd_default_weight_mb`); clamped to budget |
+| `/api/llm/api/generate`, `/api/llm/api/chat` | POST | `llm_weight_mb` |
+| everything else (options, progress, samplers, tags, ps, embeddings) | * | 0 (pass free) |
+
+### Lease API (external GPU consumers, e.g. yue-worker)
+
+```
+POST   /api/gpu/lease                 {kind: sd|llm|yue, client, weight_mb, priority?, wait_seconds?}
+       -> 200 {id, acquired: true, ttl_seconds}
+       -> 202 {id, acquired: false, position}
+       -> 503 {"error": "gpu queue timeout"} + Retry-After (wait expired)
+       -> 503 {"error": "gpu queue full"}                     (queue at capacity, 100)
+GET    /api/gpu/lease/{id}            -> {status: active|queued|unknown, position, lease_deadline}
+POST   /api/gpu/lease/{id}/heartbeat  -> 200 (active only) | 404
+DELETE /api/gpu/lease/{id}            -> release/cancel -> 200 | 404
+PATCH  /api/gpu/queue/{id}            {"move": "up"|"down"} -> 200 {position} | 400 | 404
+GET    /api/gpu/status                -> {enabled, budget, running[], queue[], warnings[]}
+```
+
+Body limit 1 MB; `client` truncated to 32 chars; `wait_seconds` clamped to
+`max_wait_seconds`.
+
+### Trust boundary
+
+The server is LAN-only by design: no authorization. Lease IDs are predictable
+and not ownership-checked — any LAN client can heartbeat/cancel any lease.
+`/api/gpu/status` exposes client strings (derived from User-Agent). Don't
+expose the API beyond the trusted LAN.
 
 ## Docker Deployment
 
@@ -371,7 +438,8 @@ docker compose up --build -d
 
 ```
 .
-├── main.go              # Entrypoint (TUI / headless modes)
+├── main.go              # Entrypoint (TUI / headless / attach modes)
+├── attach/              # Remote TUI client (daemon over REST)
 ├── handlers.go          # HTTP API handlers
 ├── proxy.go             # Reverse proxy handler
 ├── backends.go          # Backend switching logic

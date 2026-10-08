@@ -28,17 +28,6 @@ processes:
     restart: true
     max_restart: 5
 
-  rembg:
-    name: "Rembg"
-    binary: "rembg"
-    args: ["s", "--host", "0.0.0.0", "--port", "7000"]
-    health_url: "http://localhost:7000/api"
-    target_url: "http://localhost:7000"
-    proxy_path: "/api/rembg/"
-    autostart: false
-    restart: true
-    max_restart: 3
-
 # SD Backend — Forge only
 backends:
   forge:

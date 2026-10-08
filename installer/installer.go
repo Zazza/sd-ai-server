@@ -67,8 +67,8 @@ func NewInstaller(cfg *config.Config) *Installer {
 			s := &InstallStatus{Key: key}
 			s.Installed = inst.checkInstalled(pc.Install)
 			if s.Installed {
-					s.Version = pc.Install.Version
-				}
+				s.Version = pc.Install.Version
+			}
 			inst.statuses[key] = s
 			inst.logs[key] = process.NewRingBuffer(process.RingBufferSize)
 		}
@@ -87,7 +87,7 @@ func (inst *Installer) IsInstalled(key string) bool {
 	return s.Installed
 }
 
-var installOrder = []string{"python", "forge", "ollama", "rembg"}
+var installOrder = []string{"python", "forge", "ollama"}
 
 func (inst *Installer) EnsureAllInstalled() {
 	for _, key := range installOrder {

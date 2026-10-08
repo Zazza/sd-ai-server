@@ -82,7 +82,7 @@ func (m InstallModel) View() string {
 	b.WriteString(titleStyle.Render(" Installing components... "))
 	b.WriteString("\n\n")
 
-	order := []string{"python", "forge", "ollama", "rembg"}
+	order := []string{"python", "forge", "ollama"}
 
 	for _, key := range order {
 		s, ok := m.statuses[key]
@@ -130,8 +130,6 @@ func componentLabel(key string) string {
 		return "Forge"
 	case "ollama":
 		return "Ollama"
-	case "rembg":
-		return "Rembg"
 	default:
 		return key
 	}

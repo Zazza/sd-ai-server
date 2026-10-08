@@ -2,7 +2,7 @@
 
 # SD Studio Server
 
-Автономный Go-сервис для оркестрации AI-компонентов — Stable Diffusion WebUI, Ollama, Rembg — с автоматической установкой, управлением жизненным циклом, мониторингом здоровья, GPU-оптимизацией и терминальным дашбордом.
+Автономный Go-сервис для оркестрации AI-компонентов — Stable Diffusion WebUI, Ollama — с автоматической установкой, управлением жизненным циклом, мониторингом здоровья, GPU-оптимизацией и терминальным дашбордом.
 
 ## Обзор
 
@@ -53,7 +53,7 @@ docker compose up --build
 ```
 
 При первом запуске мастер настройки проведёт через:
-- Выбор компонентов для установки (SD WebUI, Ollama, Rembg)
+- Выбор компонентов для установки (SD WebUI, Ollama)
 - Выбор директории данных
 - Настройку GPU-бэкенда (Forge / A1111)
 
@@ -62,9 +62,29 @@ docker compose up --build
 | Режим | Команда | Описание |
 |-------|---------|----------|
 | TUI (интерактивный) | `./sd-studio-server` | Терминальный дашборд со статусом сервисов и управлением |
+| Attach (удалённый) | `./sd-studio-server attach [host[:port]]` | Подключить TUI-дашборд к работающему демону (по умолчанию `127.0.0.1:8080`) |
 | Headless | `./sd-studio-server --headless` | Только лог-вывод, без TUI — для серверов и Docker |
 | Кастомный порт | `./sd-studio-server --port 9090` | Переопределить порт HTTP API |
 | Кастомный конфиг | `./sd-studio-server --config path.yaml` | Использовать конкретный файл конфигурации |
+
+### Режим attach
+
+`attach` подключает интерактивный TUI-дашборд к **уже работающему** демону
+(обычно `--headless` под systemd) через его REST API — например, с десктопа:
+
+```bash
+./sd-studio-server attach 192.168.1.184        # порт 8080 по умолчанию
+./sd-studio-server attach 192.168.1.184:8080
+```
+
+- Тот же дашборд, что и локальный TUI: сервисы, health, GPU/VRAM, строка
+  GPU-очереди и экран управления (`g`: приоритеты, cancel/release), логи
+  процессов (`l`), старт/стоп/рестарт (`s`/`r`)
+- Бары CPU/RAM показывают **хост демона** (блок `sys` в `/api/server/status`)
+- Поллинг раз в 3с; при обрыве связи снапшот замораживается и появляется
+  жёлтый баннер `reconnecting` (backoff до 30с) — клиент сам не выходит
+- `q` / Ctrl+C завершает **только клиент**; демон продолжает работать
+- Нужен TTY на stdin; недоступный демон → сразу ошибка, exit 1
 
 ## Конфигурация
 
@@ -76,6 +96,15 @@ data_dir: ~/sd-studio-server
 active_sd: forge
 mdns: true
 detected_vram_mb: 8192
+
+gpu:
+  total_budget_mb: 0        # 0 = авто: detected_vram_mb - reserve_mb; итог <= 0 отключает очередь
+  reserve_mb: 500           # резерв под ОС/драйвер (только авто-режим)
+  max_wait_seconds: 120     # лимит ожидания бюджета -> 503 + Retry-After
+  lease_ttl_seconds: 90     # TTL аренды без heartbeat
+  sd_default_weight_mb: 11000   # вес SD-джобы при неизвестном чекпоинте
+  sd_overhead_mb: 4500      # вес = размер файла чекпоинта + этот overhead
+  llm_weight_mb: 11000      # вес LLM-генерации (qwen-14b)
 
 processes:
   python:
@@ -104,18 +133,6 @@ processes:
     autostart: true
     restart: true
     max_restart: 5
-
-  rembg:
-    name: "Rembg"
-    binary: "rembg"
-    args: ["s", "--host", "0.0.0.0", "--port", "7000"]
-    health_url: "http://localhost:7000/api"
-    target_url: "http://localhost:7000"
-    proxy_path: "/api/rembg/"
-    autostart: false
-    restart: true
-    max_restart: 3
-    category: utility
 
 backends:
   forge:
@@ -245,7 +262,6 @@ proxy:
 
 - Скачивание и распаковка SD WebUI Forge
 - Установка Python 3.10 standalone (платформо-зависимая)
-- Установка Rembg через pip
 - Проверка доступности бинарника Ollama
 - Отчёт о прогрессе через коллбэки
 - Отслеживание статуса установки
@@ -283,8 +299,7 @@ GET /api/server/status
 {
   "processes": {
     "sd": { "name": "Stable Diffusion", "status": "running", "pid": 12345, "uptime": "2h30m" },
-    "ollama": { "name": "Ollama", "status": "running", "pid": 12340, "uptime": "2h30m" },
-    "rembg": { "name": "Rembg", "status": "stopped" }
+    "ollama": { "name": "Ollama", "status": "running", "pid": 12340, "uptime": "2h30m" }
   }
 }
 ```
@@ -300,8 +315,10 @@ GET  /api/server/logs/{name}?lines=100
 
 ### Информация о GPU
 
+Информация о GPU — часть ответа статуса сервера (поле `"gpu"`):
+
 ```
-GET /api/gpu
+GET /api/server/status
 ```
 
 ```json
@@ -341,8 +358,59 @@ GET /api/health                 # Результаты проверки здор
 ```
 /api/sd/*    → Stable Diffusion WebUI
 /api/llm/*   → Ollama / LLM-сервис
-/api/rembg/* → Rembg-сервис
 ```
+
+## GPU-очередь
+
+### Обзор
+
+`gpuqueue` сериализует GPU-тяжёлую работу между службами (SD, LLM, внешними
+воркерами) через взвешенный бюджет VRAM: джоба выполняется только когда
+свободный бюджет ≥ её веса, иначе ждёт в FIFO-очереди (с ручным приоритетом).
+Защищает от трэша/OOM VRAM при одновременной загрузке моделей Forge, Ollama
+и yue-воркером.
+
+- **Взвешенный admission**: тяжёлые пути прокси приобретают бюджет до проброса;
+  лёгкие пути (options, progress, tags, ps) проходят свободно
+- **Аренды с TTL + heartbeat**: истёкшая аренда освобождает бюджет автоматически
+  (защита от мёртвого воркера); прокси-аренды продлеваются сами
+- **fail-open**: любая внутренняя ошибка очереди = запрос проходит + warning в статусе
+- **Ограниченное ожидание**: свыше `max_wait_seconds` → `503` + `Retry-After`
+- Состояние in-memory: рестарт сервера = чистый лист
+- Управление GPU-очередью: экран TUI по клавише `g` (локально и в attach)
+
+### Веса
+
+| Путь | Метод | Вес |
+|------|-------|-----|
+| `/api/sd/sdapi/v1/txt2img`, `img2img`, `interrogate` | POST | размер файла чекпоинта + `sd_overhead_mb` (чекпоинт трекается снифом `POST .../options`; неизвестен → `sd_default_weight_mb`); кламп до бюджета |
+| `/api/llm/api/generate`, `/api/llm/api/chat` | POST | `llm_weight_mb` |
+| всё прочее (options, progress, samplers, tags, ps, embeddings) | * | 0 (проходит свободно) |
+
+### Lease-API (внешние GPU-потребители, например yue-воркер)
+
+```
+POST   /api/gpu/lease                 {kind: sd|llm|yue, client, weight_mb, priority?, wait_seconds?}
+       -> 200 {id, acquired: true, ttl_seconds}
+       -> 202 {id, acquired: false, position}
+       -> 503 {"error": "gpu queue timeout"} + Retry-After (ожидание истекло)
+       -> 503 {"error": "gpu queue full"}                     (очередь заполнена, 100)
+GET    /api/gpu/lease/{id}            -> {status: active|queued|unknown, position, lease_deadline}
+POST   /api/gpu/lease/{id}/heartbeat  -> 200 (только active) | 404
+DELETE /api/gpu/lease/{id}            -> release/cancel -> 200 | 404
+PATCH  /api/gpu/queue/{id}            {"move": "up"|"down"} -> 200 {position} | 400 | 404
+GET    /api/gpu/status                -> {enabled, budget, running[], queue[], warnings[]}
+```
+
+Лимит тела 1 МБ; `client` обрезается до 32 символов; `wait_seconds` клампится
+до `max_wait_seconds`.
+
+### Граница доверия
+
+Сервер только для LAN by design: без авторизации. ID аренд предсказуемы и без
+проверки владельца — любой LAN-клиент может продлевать/отменять любую аренду.
+`/api/gpu/status` раскрывает client-строки (из User-Agent). Не выставлять API
+за пределы доверенной LAN.
 
 ## Деплой через Docker
 
@@ -372,7 +440,8 @@ docker compose up --build -d
 
 ```
 .
-├── main.go              # Entrypoint (режимы TUI / headless)
+├── main.go              # Entrypoint (режимы TUI / headless / attach)
+├── attach/              # Удалённый TUI-клиент (демон по REST)
 ├── handlers.go          # HTTP API-обработчики
 ├── proxy.go             # Обработчик обратного прокси
 ├── backends.go          # Логика переключения бэкендов

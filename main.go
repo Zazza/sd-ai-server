@@ -17,9 +17,11 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"sd-studio-server/api"
+	"sd-studio-server/attach"
 	"sd-studio-server/config"
 	sdgpu "sd-studio-server/gpu"
 	"sd-studio-server/gpuproxy"
+	"sd-studio-server/gpuqueue"
 	sdhealth "sd-studio-server/health"
 	"sd-studio-server/installer"
 	"sd-studio-server/models"
@@ -28,6 +30,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "attach" {
+		if err := attach.Main(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "attach:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	dataDir := flag.String("data", "", "data directory (default: ~/sd-studio-server)")
 	configPath := flag.String("config", "", "config file path (default: {data-dir}/server-config.yaml)")
 	port := flag.Int("port", 0, "override server port")
@@ -79,6 +89,8 @@ type appDeps struct {
 	gm       *sdgpu.GPUMonitor
 	gpuProxy *gpuproxy.Proxy
 	mux      *http.ServeMux
+	q        *gpuqueue.Queue
+	sdw      *sdWeightTracker
 }
 
 type gpuMonitorAdapter struct {
@@ -100,18 +112,48 @@ func (a *gpuMonitorAdapter) Info() gpuproxy.GPUInfo {
 func initApp(cfg *config.Config) *appDeps {
 	gpuOpt := sdgpu.NewOptimizerAdapter()
 	cfg.ApplyBackendToProcess(gpuOpt)
+	if cfg.DetectedVRAMMB == 0 {
+		cfg.DetectedVRAMMB = gpuOpt.DetectGPU()
+	}
 	cfg.ApplyProxyPorts(log.Printf)
 
 	inst := installer.NewInstaller(cfg)
 	inst.EnsurePythonBasePackages()
 	pm := process.NewProcessManager(cfg, inst, cfg.DataDir)
-	proxy := NewProxyHandler(pm, cfg)
 	hm := sdhealth.NewHealthMonitor(cfg)
 	gm := sdgpu.NewGPUMonitor()
 	mm := models.NewModelManager(cfg)
 	bm := NewBackendManager(cfg)
+
+	budget := cfg.GPU.ResolveBudget(cfg.DetectedVRAMMB)
+	q := gpuqueue.New(gpuqueue.Config{
+		TotalBudgetMB: budget,
+		MaxWait:       time.Duration(cfg.GPU.MaxWaitSeconds) * time.Second,
+		LeaseTTL:      time.Duration(cfg.GPU.LeaseTTLSeconds) * time.Second,
+	})
+	log.Printf("GPU queue: budget %dMB (detected VRAM %dMB)", budget, cfg.DetectedVRAMMB)
+
+	gateCfg := GateConfig{
+		SDDefaultWeightMB: cfg.GPU.SDDefaultWeightMB,
+		SDOverheadMB:      cfg.GPU.SDOverheadMB,
+		LLMWeightMB:       cfg.GPU.LLMWeightMB,
+		MaxWaitSeconds:    cfg.GPU.MaxWaitSeconds,
+	}
+	modelsDir := ""
+	if backend := cfg.GetActiveBackend(); backend != nil {
+		modelsDir = backend.ModelsDir
+	}
+	sdTargetURL := ""
+	if pc, ok := cfg.Processes["sd"]; ok {
+		sdTargetURL = pc.TargetURL
+	}
+	sdw := newSDWeight(gateCfg, mm, modelsDir, sdTargetURL)
+	gate := NewGate(q, gateCfg, sdw)
+
+	proxy := NewProxyHandler(pm, cfg, gate)
 	handlers := NewHandlers(pm, hm, gm, cfg, inst)
 	mux := setupMux(handlers, inst, mm, bm, proxy)
+	gpuqueue.NewAPI(q).RegisterRoutes(mux)
 
 	var gpuProxy *gpuproxy.Proxy
 	if cfg.Proxy.Enabled {
@@ -123,7 +165,7 @@ func initApp(cfg *config.Config) *appDeps {
 
 	return &appDeps{
 		cfg: cfg, inst: inst, pm: pm, hm: hm, gm: gm,
-		gpuProxy: gpuProxy, mux: mux,
+		gpuProxy: gpuProxy, mux: mux, q: q, sdw: sdw,
 	}
 }
 
@@ -131,6 +173,8 @@ func (d *appDeps) startMonitors(ctx context.Context) {
 	go d.pm.Watch(ctx)
 	go d.hm.Start(ctx)
 	go d.gm.Start(ctx)
+	d.q.Start(ctx)
+	go d.sdw.refresh(ctx)
 }
 
 func (d *appDeps) ensureInstalled() {
@@ -334,6 +378,21 @@ func runTUI(cfg *config.Config, cfgFile string, firstRun bool) {
 		ServerLogs: func() []string {
 			return logCapture.Lines(100)
 		},
+		QueueSnapshot: func() tui.QueueSnapshot {
+			return gpuQueueSnapshot(d.q.Status())
+		},
+		QueueMove: func(id string, dir int) error {
+			if !d.q.Move(id, dir) {
+				return fmt.Errorf("queue move %s: %w", id, gpuqueue.ErrNotFound)
+			}
+			return nil
+		},
+		QueueCancel: func(id string) error {
+			if !d.q.Cancel(id) {
+				return fmt.Errorf("queue cancel %s: %w", id, gpuqueue.ErrNotFound)
+			}
+			return nil
+		},
 	}
 
 	model := tui.NewAppModel(deps)
@@ -390,6 +449,34 @@ func runTUI(cfg *config.Config, cfgFile string, firstRun bool) {
 	os.Exit(0)
 }
 
+func gpuQueueSnapshot(st gpuqueue.Status) tui.QueueSnapshot {
+	snap := tui.QueueSnapshot{
+		Budget: st.Budget,
+	}
+	for _, w := range st.Warnings {
+		snap.Warnings = append(snap.Warnings, gpuqueue.SanitizeClient(w))
+	}
+	for _, j := range st.Running {
+		snap.Running = append(snap.Running, queueJobDTO(j))
+	}
+	for _, j := range st.Queue {
+		snap.Waiting = append(snap.Waiting, queueJobDTO(j))
+	}
+	return snap
+}
+
+func queueJobDTO(j gpuqueue.Job) tui.QueueJob {
+	return tui.QueueJob{
+		ID:            j.ID,
+		Kind:          string(j.Kind),
+		Client:        gpuqueue.SanitizeClient(j.Client),
+		WeightMB:      j.WeightMB,
+		Priority:      j.Priority,
+		SubmittedAt:   j.SubmittedAt,
+		LeaseDeadline: j.LeaseDeadline,
+	}
+}
+
 func saveConfig(path string, cfg *config.Config) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -409,7 +496,6 @@ func setupMux(handlers *Handlers, inst *installer.Installer, mm *models.ModelMan
 
 	mux.Handle("/api/sd/", proxy)
 	mux.Handle("/api/llm/", proxy)
-	mux.Handle("/api/rembg/", proxy)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
@@ -429,7 +515,7 @@ func setupMux(handlers *Handlers, inst *installer.Installer, mm *models.ModelMan
 func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
@@ -458,7 +544,7 @@ func ensureOllamaBinary(cfg *config.Config, pm *process.ProcessManager, inst *in
 					pc.Env["LD_LIBRARY_PATH"] = libDir
 				}
 			}
-				configureOllamaGPU(&pc, gm)
+			configureOllamaGPU(&pc, gm)
 			cfg.Processes["ollama"] = pc
 			pm.UpdateProcessConfig("ollama", ollamaPath, pc.Args, pc.WorkDir)
 		}

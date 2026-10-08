@@ -45,7 +45,6 @@ func NewWizardModel(defaultDir string) WizardModel {
 			{Key: "python", Label: "Python 3.10", Active: true},
 			{Key: "forge", Label: "Stable Diffusion Forge", Active: true},
 			{Key: "ollama", Label: "Ollama (LLM)", Active: true},
-			{Key: "rembg", Label: "Rembg (background removal)", Active: true},
 		},
 		focusIndex: 0,
 	}

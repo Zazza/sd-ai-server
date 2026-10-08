@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-10-08
+
+### Added
+- Attach mode: `sd-studio-server attach [host[:port]]` — remote TUI dashboard over the daemon REST API (3s polling, reconnect banner with backoff, process control, logs view); `q` exits the client only, the daemon keeps running; daemon strings sanitized against terminal ESC injection, 2 MB response cap
+- `/api/server/status` now includes a `sys` block (daemon host CPU/RAM) for remote dashboards
+- GPU budget queue (`gpuqueue/`): weighted VRAM semaphore with FIFO queue + priority, TTL leases with heartbeat, fail-open semantics, bounded wait → 503 + Retry-After
+- Proxy gating: heavy SD/LLM paths acquire GPU budget before forwarding; SD weight = checkpoint file size + overhead (checkpoint tracked by sniffing `POST /sdapi/v1/options`)
+- Lease API for external GPU consumers (yue-worker): `POST /api/gpu/lease`, heartbeat, `DELETE`, `PATCH /api/gpu/queue/{id}`, `GET /api/gpu/status`
+- Embedded web panel at `/ui` (budget bar, running jobs, queue move/cancel, warnings; 2s polling)
+- TUI: GPU queue line (budget bar, run/queue counts, warnings)
+- Config section `gpu:` (auto budget from detected VRAM, weights, TTL, max wait)
+
+### Changed
+- `gpuproxy/` marked legacy (standalone mode, off by default) — superseded by `gpuqueue`
+- CORS middleware now allows PATCH (queue reorder)
+
+### Removed
+- Web panel `/ui` (package `webui`); GPU queue management moved to the TUI (`g` screen, local + attach)
+- Rembg component: process config, `/api/rembg/` proxy route, installer step, wizard entry, docs (client dropped it in v0.8.0)
+
 ## [1.0.0] — 2025-05-30
 
 ### Added

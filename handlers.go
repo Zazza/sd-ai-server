@@ -14,6 +14,9 @@ import (
 	sdhealth "sd-studio-server/health"
 	"sd-studio-server/installer"
 	"sd-studio-server/process"
+
+	"github.com/shirou/gopsutil/v3/cpu"
+	"github.com/shirou/gopsutil/v3/mem"
 )
 
 type Handlers struct {
@@ -22,6 +25,13 @@ type Handlers struct {
 	gpu       *sdgpu.GPUMonitor
 	config    *config.Config
 	installer *installer.Installer
+}
+
+type sysJSON struct {
+	CPUPercent float64 `json:"cpu_percent"`
+	RAMUsage   float64 `json:"ram_usage"`
+	RAMUsed    uint64  `json:"ram_used"`
+	RAMTotal   uint64  `json:"ram_total"`
 }
 
 func NewHandlers(pm *process.ProcessManager, hm *sdhealth.HealthMonitor, gm *sdgpu.GPUMonitor, cfg *config.Config, inst *installer.Installer) *Handlers {
@@ -59,6 +69,7 @@ func (h *Handlers) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"gpu":       gpuInfo,
 		"installs":  h.installer.Status(),
 		"models":    models,
+		"sys":       hostSysStats(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -156,6 +167,24 @@ func (h *Handlers) handleLogs(w http.ResponseWriter, r *http.Request) {
 		"lines":   lines,
 		"logs":    logs,
 	})
+}
+
+func hostSysStats() sysJSON {
+	var s sysJSON
+
+	percentages, err := cpu.Percent(0, false)
+	if err == nil && len(percentages) > 0 {
+		s.CPUPercent = percentages[0]
+	}
+
+	vmStat, err := mem.VirtualMemory()
+	if err == nil {
+		s.RAMUsage = vmStat.UsedPercent
+		s.RAMUsed = vmStat.Used
+		s.RAMTotal = vmStat.Total
+	}
+
+	return s
 }
 
 func (h *Handlers) fetchModels() map[string]interface{} {

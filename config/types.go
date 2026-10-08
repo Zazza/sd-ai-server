@@ -15,14 +15,35 @@ const (
 )
 
 type Config struct {
-	Port           int                       `yaml:"port"`
-	MDNS           bool                      `yaml:"mdns"`
-	DataDir        string                    `yaml:"data_dir"`
-	ActiveSD       string                    `yaml:"active_sd"`
-	DetectedVRAMMB int                       `yaml:"detected_vram_mb"`
-	Processes      map[string]ProcessConfig  `yaml:"processes"`
-	Backends       map[string]BackendConfig  `yaml:"backends"`
-	Proxy          gpuproxy.Config           `yaml:"proxy"`
+	Port           int                      `yaml:"port"`
+	MDNS           bool                     `yaml:"mdns"`
+	DataDir        string                   `yaml:"data_dir"`
+	ActiveSD       string                   `yaml:"active_sd"`
+	DetectedVRAMMB int                      `yaml:"detected_vram_mb"`
+	Processes      map[string]ProcessConfig `yaml:"processes"`
+	Backends       map[string]BackendConfig `yaml:"backends"`
+	Proxy          gpuproxy.Config          `yaml:"proxy"`
+	GPU            GPUConfig                `yaml:"gpu"`
+}
+
+type GPUConfig struct {
+	TotalBudgetMB     int `yaml:"total_budget_mb"`
+	ReserveMB         int `yaml:"reserve_mb"`
+	MaxWaitSeconds    int `yaml:"max_wait_seconds"`
+	LeaseTTLSeconds   int `yaml:"lease_ttl_seconds"`
+	SDDefaultWeightMB int `yaml:"sd_default_weight_mb"`
+	SDOverheadMB      int `yaml:"sd_overhead_mb"`
+	LLMWeightMB       int `yaml:"llm_weight_mb"`
+}
+
+func (g *GPUConfig) ResolveBudget(detectedVRAMMB int) int {
+	if g.TotalBudgetMB > 0 {
+		return g.TotalBudgetMB
+	}
+	if detectedVRAMMB <= 0 {
+		return 0
+	}
+	return detectedVRAMMB - g.ReserveMB
 }
 
 type InstallConfig struct {

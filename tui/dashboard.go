@@ -28,6 +28,9 @@ type DashboardModel struct {
 	terminalLines []string
 	termOffset    int
 	termFollowing bool
+	showQueue     bool
+	queueSel      int
+	queueFlash    string
 }
 
 func NewDashboardModel(deps ServerDeps, ip string) DashboardModel {
@@ -43,7 +46,12 @@ func (m DashboardModel) Init() tea.Cmd {
 
 func (m DashboardModel) collectStats() tea.Cmd {
 	return func() tea.Msg {
-		stats := PollSysStats()
+		var stats SysStats
+		if m.deps.PollStats != nil {
+			stats = m.deps.PollStats()
+		} else {
+			stats = PollSysStats()
+		}
 		return sysStatsMsg{
 			CPUUsage: stats.CPUUsage,
 			RAMUsage: stats.RAMUsage,
@@ -95,6 +103,19 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.refreshServices()
 		m.refreshGPU()
+		return m, nil
+
+	case ServicesChangeMsg:
+		m.refreshServices()
+		m.refreshGPU()
+		return m, nil
+
+	case queueResultMsg:
+		if msg.err != nil {
+			m.queueFlash = "error: " + msg.err.Error()
+		} else {
+			m.queueFlash = ""
+		}
 		return m, nil
 
 	case tea.KeyMsg:
@@ -184,6 +205,40 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		if m.showQueue {
+			switch msg.String() {
+			case "q", "esc":
+				m.showQueue = false
+				m.queueSel = 0
+				m.queueFlash = ""
+				return m, nil
+			case "up", "k":
+				m.queueSel = clampQueueSel(m.queueSel, m.queueJobCount())
+				if m.queueSel > 0 {
+					m.queueSel--
+				}
+			case "down", "j":
+				total := m.queueJobCount()
+				m.queueSel = clampQueueSel(m.queueSel, total)
+				if m.queueSel < total-1 {
+					m.queueSel++
+				}
+			case "u":
+				if job, waiting, ok := m.selectedQueueJob(); ok && waiting && m.deps.QueueMove != nil {
+					return m, queueCmd(func() error { return m.deps.QueueMove(job.ID, -1) })
+				}
+			case "d":
+				if job, waiting, ok := m.selectedQueueJob(); ok && waiting && m.deps.QueueMove != nil {
+					return m, queueCmd(func() error { return m.deps.QueueMove(job.ID, 1) })
+				}
+			case "x":
+				if job, _, ok := m.selectedQueueJob(); ok && m.deps.QueueCancel != nil {
+					return m, queueCmd(func() error { return m.deps.QueueCancel(job.ID) })
+				}
+			}
+			return m, nil
+		}
+
 		svcKeys := m.serviceOnlyKeys()
 		switch msg.String() {
 		case "q":
@@ -230,6 +285,12 @@ func (m DashboardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.logOffset = m.maxLogOffset()
 				return m, logsTick()
 			}
+		case "g":
+			if m.deps.QueueSnapshot != nil {
+				m.showQueue = true
+				m.queueSel = 0
+				m.queueFlash = ""
+			}
 		}
 	}
 	return m, nil
@@ -242,10 +303,10 @@ func (m *DashboardModel) refreshServices() {
 	m.services = make(map[string]ServiceInfo, len(statuses))
 	for k, ps := range statuses {
 		si := ServiceInfo{
-			Name:   ps.Name,
-			Status: ps.Status,
-			PID:    ps.PID,
-			Uptime: ps.Uptime,
+			Name:     ps.Name,
+			Status:   ps.Status,
+			PID:      ps.PID,
+			Uptime:   ps.Uptime,
 			Category: ps.Category,
 		}
 		if hr, ok := healthResults[k]; ok {
@@ -321,13 +382,16 @@ func (m DashboardModel) View() string {
 	if m.showLogs {
 		return m.viewLogs()
 	}
+	if m.showQueue {
+		return m.viewQueue()
+	}
 	return m.viewDashboard()
 }
 
 var headerBg = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("#FAFAFA")).
-		Background(lipgloss.Color("#7D56F4"))
+	Bold(true).
+	Foreground(lipgloss.Color("#FAFAFA")).
+	Background(lipgloss.Color("#7D56F4"))
 
 func (m DashboardModel) viewLogs() string {
 	w, h := m.width, m.height
@@ -433,9 +497,13 @@ func (m DashboardModel) viewDashboard() string {
 
 	var lines []string
 
-	port := m.deps.Port
-	header := fmt.Sprintf(" SD Studio Server   %s  %s:%d ", runningStyle.Render("[RUNNING]"), m.ip, port)
+	header := fmt.Sprintf(" SD Studio Server   %s  %s ", runningStyle.Render("[RUNNING]"), m.address())
 	lines = append(lines, headerBg.Render(header))
+	if m.deps.ConnState != nil {
+		if banner := m.deps.ConnState(); banner != "" {
+			lines = append(lines, progressYellow.Render(" "+banner+" "))
+		}
+	}
 	lines = append(lines, sep(w))
 	lines = append(lines, m.renderMetrics()...)
 	lines = append(lines, sep(w))
@@ -499,9 +567,24 @@ func (m DashboardModel) viewDashboard() string {
 		lines = append(lines, "")
 	}
 
-	lines = append(lines, helpStyle.Render("[r] restart  [s] start/stop  [l] logs  [t] terminal  [q] quit"))
+	help := "[r] restart  [s] start/stop  [l] logs"
+	if m.deps.QueueSnapshot != nil {
+		help += "  [g] gpu queue"
+	}
+	if m.deps.ServerLogs != nil {
+		help += "  [t] terminal"
+	}
+	help += "  [q] quit"
+	lines = append(lines, helpStyle.Render(help))
 
 	return fillScreen(w, h, lines)
+}
+
+func (m DashboardModel) address() string {
+	if strings.Contains(m.ip, ":") {
+		return m.ip
+	}
+	return fmt.Sprintf("%s:%d", m.ip, m.deps.Port)
 }
 
 func (m DashboardModel) renderMetrics() []string {
@@ -527,6 +610,13 @@ func (m DashboardModel) renderMetrics() []string {
 
 		gpuBar := renderBar(float64(m.gpuInfo.Utilization), barWidth)
 		lines = append(lines, fmt.Sprintf("  GPU  %s", gpuBar))
+	}
+
+	if m.deps.QueueSnapshot != nil {
+		snap := m.deps.QueueSnapshot()
+		if snap.Budget > 0 {
+			lines = append(lines, "  GPUQ "+queueSummaryLine(snap, queueUsedMB(snap)))
+		}
 	}
 
 	return lines

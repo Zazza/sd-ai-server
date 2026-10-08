@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -28,6 +29,30 @@ type ServerDeps struct {
 	GPUInfo       func() GPUInfo
 	HealthResults func() map[string]HealthResult
 	ServerLogs    func() []string
+
+	QueueSnapshot func() QueueSnapshot
+	QueueMove     func(id string, dir int) error
+	QueueCancel   func(id string) error
+
+	PollStats func() SysStats
+	ConnState func() string
+}
+
+type QueueJob struct {
+	ID            string
+	Kind          string
+	Client        string
+	WeightMB      int
+	Priority      int
+	SubmittedAt   time.Time
+	LeaseDeadline time.Time
+}
+
+type QueueSnapshot struct {
+	Budget   int
+	Running  []QueueJob
+	Waiting  []QueueJob
+	Warnings []string
 }
 
 type ComponentInstallStatus struct {
@@ -64,13 +89,13 @@ type HealthResult struct {
 }
 
 type AppModel struct {
-	phase    Phase
-	deps     ServerDeps
-	ctx      context.Context
-	cancel   context.CancelFunc
-	width    int
-	height   int
-	ip       string
+	phase  Phase
+	deps   ServerDeps
+	ctx    context.Context
+	cancel context.CancelFunc
+	width  int
+	height int
+	ip     string
 
 	install   InstallModel
 	dashboard DashboardModel
@@ -89,6 +114,22 @@ func NewAppModel(deps ServerDeps) AppModel {
 	}
 
 	m.install = NewInstallModel(deps)
+	m.dashboard = NewDashboardModel(deps, m.ip)
+
+	return m
+}
+
+func NewAttachModel(deps ServerDeps, hostport string) AppModel {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	m := AppModel{
+		deps:   deps,
+		ctx:    ctx,
+		cancel: cancel,
+		ip:     hostport,
+		phase:  PhaseDashboard,
+	}
+
 	m.dashboard = NewDashboardModel(deps, m.ip)
 
 	return m
